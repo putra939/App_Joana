@@ -2159,6 +2159,13 @@
   #page-input-produk #inputProductPagination .btn{font-size:8px;padding:7px 3px;}
 }
 
+
+
+  /* Cegah efek pull-to-refresh / overscroll pada Android dan tablet */
+  html, body {
+    overscroll-behavior-y: none;
+  }
+
 </style>
 </head>
 <body>
@@ -7413,6 +7420,50 @@ document.addEventListener('DOMContentLoaded', function () {
       refreshNativePrinterUi('🟠 Printer terputus. Akan dihubungkan kembali saat diperlukan.');
     }
   };
+})();
+</script>
+
+
+
+<!-- BLOKIR REFRESH F5 / CTRL+R DAN PULL-TO-REFRESH -->
+<script>
+(function () {
+  'use strict';
+
+  // Blokir refresh keyboard pada desktop: F5 dan Ctrl/Cmd + R
+  document.addEventListener('keydown', function (e) {
+    const key = (e.key || '').toLowerCase();
+    const isRefresh = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && key === 'r');
+    if (isRefresh) {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    }
+  }, true);
+
+  // Cegah pull-to-refresh saat berada di bagian paling atas halaman.
+  // Scroll pada elemen internal seperti tabel/modal tetap diperbolehkan.
+  let touchStartY = 0;
+  let touchStartX = 0;
+
+  document.addEventListener('touchstart', function (e) {
+    if (!e.touches || !e.touches.length) return;
+    touchStartY = e.touches[0].clientY;
+    touchStartX = e.touches[0].clientX;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (!e.touches || !e.touches.length) return;
+
+    const deltaY = e.touches[0].clientY - touchStartY;
+    const deltaX = e.touches[0].clientX - touchStartX;
+    const atTop = window.scrollY <= 0 && document.documentElement.scrollTop <= 0;
+
+    // Hanya blokir gerakan tarik ke bawah dari atas layar, bukan swipe horizontal.
+    if (atTop && deltaY > 0 && Math.abs(deltaY) > Math.abs(deltaX)) {
+      e.preventDefault();
+    }
+  }, { passive: false });
 })();
 </script>
 
