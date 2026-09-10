@@ -2209,6 +2209,65 @@
     overscroll-behavior-y: none;
   }
 
+
+/* ==================================================
+   HISTORY TRANSAKSI - PAGINATION (10 DATA PER HALAMAN)
+   ================================================== */
+.history-pagination-wrap{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  flex-wrap:wrap;
+  margin-top:18px;
+  padding-top:14px;
+  border-top:1px solid var(--border);
+}
+.history-pagination-info{
+  font-size:12.5px;
+  color:var(--ink-mute);
+}
+.history-pagination{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:7px;
+  flex-wrap:wrap;
+}
+.history-page-btn{
+  min-width:38px;
+  height:38px;
+  padding:0 10px;
+  border:1px solid var(--border);
+  background:#fff;
+  color:var(--slate-700);
+  border-radius:9px;
+  font-size:13px;
+  font-weight:600;
+  cursor:pointer;
+  transition:all .2s ease;
+}
+.history-page-btn:hover:not(:disabled){
+  border-color:var(--accent-500);
+  color:var(--accent-600);
+  background:rgba(59,130,246,.06);
+}
+.history-page-btn.active{
+  background:var(--accent-500);
+  border-color:var(--accent-500);
+  color:#fff;
+}
+.history-page-btn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+@media(max-width:576px){
+  .history-pagination-wrap{align-items:stretch;}
+  .history-pagination-info{width:100%; text-align:center;}
+  .history-pagination{width:100%; justify-content:center;}
+  .history-page-btn{min-width:36px; height:36px;}
+}
+
 </style>
 </head>
 <body>
@@ -2582,6 +2641,7 @@
         </div>
       </section>
 
+
 <section class="page" id="page-history-transaksi">
         <div class="page-header">
           <div><div class="page-eyebrow">Database Transaksi</div><h2 class="page-title">History Transaksi</h2><p class="page-subtitle">Riwayat pembayaran yang tersimpan di Spreadsheet serta pengembalian stok melalui fitur Refund</p></div>
@@ -2602,11 +2662,11 @@
             <div class="row g-3 align-items-end">
               <div class="col-md-4">
                 <label for="historyDateFrom" class="form-label small fw-semibold mb-1">Dari</label>
-                <input type="date" id="historyDateFrom" class="form-control" onchange="renderTransactionHistory()">
+                <input type="date" id="historyDateFrom" class="form-control" onchange="historyPage=1;renderTransactionHistory()">
               </div>
               <div class="col-md-4">
                 <label for="historyDateTo" class="form-label small fw-semibold mb-1">Sampai</label>
-                <input type="date" id="historyDateTo" class="form-control" onchange="renderTransactionHistory()">
+                <input type="date" id="historyDateTo" class="form-control" onchange="historyPage=1;renderTransactionHistory()">
               </div>
               <div class="col-md-4 d-flex gap-2">
                 <button type="button" class="btn btn-accent flex-grow-1" onclick="applyHistoryDateRange()">
@@ -2625,6 +2685,10 @@
               <thead><tr><th>Nama Produk</th><th>Stok Dibeli</th><th>Tanggal</th><th>Jam</th><th>Total</th><th>Metode</th><th>Status</th><th>Refund</th><th class="text-center">Aksi</th></tr></thead>
               <tbody id="historyTableBody"><tr><td colspan="9" class="text-center text-muted py-4">Pilih menu History Transaksi untuk memuat data.</td></tr></tbody>
             </table>
+          </div>
+          <div id="historyPagination" class="history-pagination-wrap" style="display:none;">
+            <div id="historyPaginationInfo" class="history-pagination-info"></div>
+            <div id="historyPaginationButtons" class="history-pagination"></div>
           </div>
         </div>
       </section>
@@ -5661,26 +5725,61 @@ async function postGAS(payload) {
   }
 }
 
-async function autoRefreshAfterPayment(){
-  // Refresh data aplikasi tanpa reload halaman agar koneksi Bluetooth tidak terputus.
-  // Semua data terbaru (stok, produk, history dan dashboard) disinkronkan otomatis.
+async function autoRefreshAfterPayment(soldItems = []){
+  // Sinkronkan data terbaru tanpa reload halaman agar koneksi Bluetooth tidak terputus.
+  // Karena POST Apps Script menggunakan no-cors, perubahan di Spreadsheet dapat membutuhkan
+  // beberapa saat sebelum terbaca kembali. Gunakan beberapa percobaan otomatis.
+  const salesContainer = document.getElementById('orderProductList');
+
+  const showSalesLoading = (message) => {
+    if (!salesContainer) return;
+    salesContainer.innerHTML = `
+      <div class="w-100 text-center py-5">
+        <div class="spinner-border text-primary mb-3" role="status"></div>
+        <div class="fw-semibold">${message}</div>
+        <div class="text-muted small mt-1">Memperbarui stok produk terbaru...</div>
+      </div>`;
+  };
+
   try{
-    await Promise.allSettled([
-      fetchProductsFromGAS(),
-      loadTransactionHistory()
-    ]);
+    showSalesLoading('Memuat data terbaru...');
 
-    if(typeof renderOrderProducts==='function') renderOrderProducts();
-    if(typeof renderSummary==='function') renderSummary();
+    // Coba membaca ulang beberapa kali sampai perubahan stok dari transaksi selesai diproses.
+    const attempts = 3;
+    for(let attempt = 0; attempt < attempts; attempt++){
+      if(attempt > 0){
+        await new Promise(resolve => setTimeout(resolve, 900));
+      }
 
-    // Jika dashboard memiliki fungsi pemuatan sendiri, jalankan bila tersedia.
-    if(typeof loadDashboard==='function') {
+      await fetchProductsFromGAS();
+
+      // Jika stok produk yang baru dijual sudah berubah sesuai transaksi,
+      // sinkronisasi dianggap berhasil dan tidak perlu menunggu percobaan berikutnya.
+      const synced = !Array.isArray(soldItems) || soldItems.length === 0 ||
+        soldItems.every(item => {
+          const latest = products.find(p => String(p.id) === String(item.id));
+          return !latest || Number(latest.stock || 0) <= Number(item.previousStock || Infinity) - Number(item.qty || 0);
+        });
+
+      if(synced || attempt === attempts - 1) break;
+    }
+
+    await loadTransactionHistory();
+
+    // Setelah data terbaru diterima, tampilkan ulang menu PENJUALAN.
+    if(typeof renderOrderProducts === 'function') renderOrderProducts();
+    if(typeof renderSummary === 'function') renderSummary();
+
+    if(typeof loadDashboard === 'function') {
       Promise.resolve(loadDashboard()).catch(()=>{});
     }
 
-    showToast('Data Diperbarui','Stok dan riwayat transaksi telah diperbarui otomatis.','slate');
+    showToast('Data Diperbarui','Stok pada menu Penjualan telah disinkronkan dengan data terbaru.','slate');
   }catch(err){
     console.warn('Auto refresh setelah pembayaran gagal:',err);
+
+    // Jangan biarkan tampilan PENJUALAN berhenti pada status memuat.
+    if(typeof renderOrderProducts === 'function') renderOrderProducts();
   }
 }
 
@@ -5818,9 +5917,21 @@ async function processPayment() {
       await printPromise;
     }
 
+    // DATA STOK SEBELUM TRANSAKSI disimpan untuk memastikan menu PENJUALAN
+    // menampilkan jumlah stok terbaru setelah sinkronisasi.
+    const soldItemsForRefresh = receiptData.items.map(item => {
+      const product = products.find(p => String(p.name) === String(item.name));
+      return {
+        id: product?.id || '',
+        qty: Number(item.qty || 0),
+        previousStock: Number(product?.stock || 0)
+      };
+    });
+
     // AUTO REFRESH setelah pembayaran selesai.
     // Dilakukan tanpa reload browser supaya koneksi Bluetooth tetap terhubung.
-    autoRefreshAfterPayment();
+    // Jalankan proses memuat data terbaru pada menu PENJUALAN.
+    autoRefreshAfterPayment(soldItemsForRefresh);
 
   } catch (error) {
     console.error('Gagal menyimpan transaksi:', error);
@@ -5847,9 +5958,12 @@ async function processPayment() {
 // =====================================================
 let transactionHistory = [];
 let currentHistoryFilter = 'daily';
+let historyPage = 1;
+const HISTORY_PAGE_SIZE = 10;
 
 function setHistoryFilter(filter, button) {
   currentHistoryFilter = filter;
+  historyPage = 1;
   document.querySelectorAll('.history-filter').forEach(b => b.classList.remove('active'));
   if (button) button.classList.add('active');
   renderTransactionHistory();
@@ -5890,11 +6004,13 @@ function applyHistoryDateRange() {
   }
 
   // Rentang tanggal menjadi prioritas pencarian.
+  historyPage = 1;
   document.querySelectorAll('.history-filter').forEach(b => b.classList.remove('active'));
   renderTransactionHistory();
 }
 
 function resetHistoryDateRange() {
+  historyPage = 1;
   const fromInput = document.getElementById('historyDateFrom');
   const toInput = document.getElementById('historyDateTo');
 
@@ -6326,6 +6442,7 @@ async function loadTransactionHistory() {
     // Ambil nama produk dari Detail_Pesanan berdasarkan ID_PEMESANAN.
     // Ini memperbaiki transaksi lama yang tidak memiliki NAMA_PRODUK pada sheet Pesanan.
     transactionHistory=await enrichHistoryWithProductNames(rawHistory);
+    historyPage = 1;
 
     renderTransactionHistory();
   } catch(error) {
@@ -6461,6 +6578,9 @@ function getHistoryProductNames(item) {
 
 function renderTransactionHistory() {
   const body=document.getElementById('historyTableBody');
+  const paginationWrap=document.getElementById('historyPagination');
+  const paginationInfo=document.getElementById('historyPaginationInfo');
+  const paginationButtons=document.getElementById('historyPaginationButtons');
   if (!body) return;
 
   const data=transactionHistory.filter(isInHistoryPeriod).sort((a,b)=>{
@@ -6473,10 +6593,19 @@ function renderTransactionHistory() {
 
   if (!data.length) {
     body.innerHTML='<tr><td colspan="9" class="text-center text-muted py-4">Belum ada transaksi pada periode ini.</td></tr>';
+    if (paginationWrap) paginationWrap.style.display='none';
     return;
   }
 
-  body.innerHTML=data.map(x=>{
+  const totalPages=Math.max(1, Math.ceil(data.length / HISTORY_PAGE_SIZE));
+  if (historyPage > totalPages) historyPage=totalPages;
+  if (historyPage < 1) historyPage=1;
+
+  const startIndex=(historyPage-1)*HISTORY_PAGE_SIZE;
+  const endIndex=Math.min(startIndex+HISTORY_PAGE_SIZE, data.length);
+  const pageData=data.slice(startIndex,endIndex);
+
+  body.innerHTML=pageData.map(x=>{
     const refundStatus=String(x.STATUS_REFUND||'').toUpperCase();
     const transactionStatus=String(x.STATUS_TRANSAKSI||'').toUpperCase();
 
@@ -6526,6 +6655,49 @@ function renderTransactionHistory() {
       </tr>
     `;
   }).join('');
+
+  if (paginationWrap && paginationInfo && paginationButtons) {
+    paginationWrap.style.display = data.length > HISTORY_PAGE_SIZE ? 'flex' : 'none';
+    paginationInfo.textContent = `Menampilkan ${startIndex+1}–${endIndex} dari ${data.length} transaksi`;
+
+    const makeButton=(label,page,disabled=false,active=false,icon='') => {
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='history-page-btn'+(active?' active':'');
+      btn.disabled=disabled;
+      btn.innerHTML=icon ? `<i class="bi ${icon}"></i>` : label;
+      btn.setAttribute('aria-label', label);
+      btn.addEventListener('click',()=>{
+        historyPage=page;
+        renderTransactionHistory();
+        const section=document.getElementById('page-history-transaksi');
+        if(section) section.scrollIntoView({behavior:'smooth',block:'start'});
+      });
+      return btn;
+    };
+
+    paginationButtons.innerHTML='';
+    paginationButtons.appendChild(makeButton('Halaman sebelumnya', historyPage-1, historyPage===1, false, 'bi-chevron-left'));
+
+    // Tampilkan nomor halaman secara ringkas agar tetap nyaman di HP/tablet.
+    const pages=[];
+    for(let p=1;p<=totalPages;p++){
+      if(p===1 || p===totalPages || Math.abs(p-historyPage)<=1) pages.push(p);
+    }
+    let previous=0;
+    pages.forEach(p=>{
+      if(p-previous>1){
+        const dots=document.createElement('span');
+        dots.className='history-pagination-info px-1';
+        dots.textContent='…';
+        paginationButtons.appendChild(dots);
+      }
+      paginationButtons.appendChild(makeButton(String(p),p,false,p===historyPage));
+      previous=p;
+    });
+
+    paginationButtons.appendChild(makeButton('Halaman berikutnya', historyPage+1, historyPage===totalPages, false, 'bi-chevron-right'));
+  }
 }
 
 // =====================================================
