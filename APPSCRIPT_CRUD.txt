@@ -1,0 +1,2650 @@
+/****************************************************
+ * APP RING STORE
+ * CRUD PRODUK + FOTO GOOGLE DRIVE
+ *
+ * CREATE
+ * → Upload foto ke Google Drive
+ * → Simpan URL foto ke Spreadsheet
+ *
+ * UPDATE FOTO
+ * → Upload foto baru
+ * → Hapus foto lama
+ * → Update URL foto
+ *
+ * HAPUS FOTO
+ * → Hapus foto dari Google Drive
+ * → Kosongkan URL_GAMBAR
+ *
+ * DELETE PRODUK
+ * → Hapus foto dari Google Drive
+ * → Hapus data Spreadsheet
+ ****************************************************/
+
+
+// ==================================================
+// KONFIGURASI
+// ==================================================
+const CONFIG = {
+
+  // ID GOOGLE SPREADSHEET
+  SPREADSHEET_ID: '1xpQKcjU3rmirkh5MNm-Pn9gfOiy9sraFsHfkOacoAbc',
+
+  // NAMA SHEET
+  SHEET_NAME: 'Input_Produk',
+
+  // KOLOM ID
+  ID_FIELD: 'ID_RING',
+
+  // KOLOM FOTO
+  IMAGE_FIELD: 'URL_GAMBAR',
+
+  // ID FOLDER GOOGLE DRIVE
+  IMAGE_FOLDER_ID: '1gAOvnh_q5GQSeznd0cgBrzq40CFOplry',
+
+  // ==================================================
+  // DATABASE TRANSAKSI
+  // ==================================================
+  ORDER_SHEET_NAME: 'Pesanan',
+  DETAIL_ORDER_SHEET_NAME: 'Detail_Pesanan',
+
+  // ID relasi produk tetap menggunakan ID_RING
+  PRODUCT_ID_FIELD: 'ID_RING',
+  PRODUCT_STOCK_FIELD: 'STOK_PRODUK',
+
+  // ==================================================
+  // DATABASE LOGIN / PASSWORD
+  // ==================================================
+  LOGIN_SHEET_NAME: 'Login',
+  LOGIN_ID_FIELD: 'ID_LOGIN',
+  LOGIN_PASSWORD_FIELD: 'PASSWORD',
+
+  // ==================================================
+  // PENGATURAN RESI
+  // ==================================================
+  RECEIPT_SHEET_NAME: 'Pengaturan_Resi'
+};
+
+
+// ==================================================
+// RESPONSE JSON
+// ==================================================
+function response(data) {
+
+  return ContentService
+    .createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+
+}
+
+
+// ==================================================
+// DO GET
+// ==================================================
+function doGet(e) {
+
+  try {
+
+    const action =
+      e &&
+      e.parameter &&
+      e.parameter.action
+        ? e.parameter.action
+        : 'read';
+
+
+    switch (action) {
+
+      case 'read':
+        return response(readData());
+
+      case 'get':
+        return response(getData(e.parameter.id));
+
+      // =================================================
+      // PENGATURAN RESI
+      // =================================================
+      case 'getReceiptSettings':
+      case 'receiptSettings':
+        return response(getReceiptSettings());
+
+      // =================================================
+      // HISTORY TRANSAKSI
+      // =================================================
+      case 'history':
+      case 'readHistory':
+        return response(readTransactionHistory(e.parameter.period));
+
+      case 'transaction':
+      case 'getTransaction':
+        return response(getTransactionDetail(e.parameter.id));
+
+      // =================================================
+      // LOGIN / VERIFIKASI PASSWORD
+      // =================================================
+      case 'verifyPassword':
+        return response(verifyPassword(
+          e.parameter.password || '',
+          e.parameter.idLogin || ''
+        ));
+
+      default:
+        return response({
+          success: false,
+          message: 'Action tidak dikenal.'
+        });
+
+    }
+
+  } catch (error) {
+
+    return response({
+      success: false,
+      message: error.message
+    });
+
+  }
+
+}
+
+
+// ==================================================
+// DO POST
+// ==================================================
+function doPost(e) {
+
+  try {
+
+    if (!e || !e.postData || !e.postData.contents) {
+      throw new Error('Data POST tidak ditemukan.');
+    }
+
+
+    const request = JSON.parse(e.postData.contents);
+
+    const action = request.action;
+    const data = request.data || {};
+
+
+    switch (action) {
+
+      case 'create':
+        return response(createData(data));
+
+      case 'update':
+        return response(updateData(request.id, data));
+
+      case 'delete':
+        return response(deleteData(request.id));
+
+      // =================================================
+      // PENGATURAN RESI
+      // =================================================
+      case 'saveReceiptSettings':
+      case 'updateReceiptSettings':
+        return response(saveReceiptSettings(data));
+
+      // =================================================
+      // TRANSAKSI PENJUALAN
+      // =================================================
+      case 'createTransaction':
+      case 'transaction':
+      case 'checkout':
+        return response(createTransaction(data));
+
+      // =================================================
+      // REFUND TRANSAKSI
+      // =================================================
+      case 'refund':
+      case 'refundTransaction':
+        return response(refundTransaction(request.id || data.ID_PEMESANAN, data));
+
+      // =================================================
+      // LOGIN / PASSWORD
+      // =================================================
+      case 'verifyPassword':
+        return response(verifyPassword(
+          request.password || data.password || '',
+          request.idLogin || data.idLogin || ''
+        ));
+
+      case 'changePassword':
+        return response(changePassword(
+          request.currentPassword || data.currentPassword || '',
+          request.newPassword || data.newPassword || '',
+          request.idLogin || data.idLogin || ''
+        ));
+
+      default:
+        throw new Error('Action tidak dikenal: ' + action);
+
+    }
+
+  } catch (error) {
+
+    Logger.log(error);
+
+    return response({
+      success: false,
+      message: error.message
+    });
+
+  }
+
+}
+
+
+
+// ==================================================
+// DATABASE LOGIN / PASSWORD
+// Sheet: Login
+// Kolom wajib:
+// A = ID_LOGIN
+// B = PASSWORD
+// ==================================================
+function getLoginSheet() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(CONFIG.LOGIN_SHEET_NAME);
+
+  if (!sheet) {
+    throw new Error(
+      'Sheet "' + CONFIG.LOGIN_SHEET_NAME + '" tidak ditemukan. ' +
+      'Buat sheet Login dengan kolom ID_LOGIN dan PASSWORD.'
+    );
+  }
+
+  return sheet;
+}
+
+function getLoginHeaders() {
+  const sheet = getLoginSheet();
+  const lastColumn = sheet.getLastColumn();
+
+  if (lastColumn < 1) {
+    throw new Error('Sheet Login belum memiliki header.');
+  }
+
+  return sheet.getRange(1, 1, 1, lastColumn)
+    .getDisplayValues()[0]
+    .map(function(header) {
+      return String(header || '').trim().toUpperCase();
+    });
+}
+
+function getLoginColumnIndexes() {
+  const headers = getLoginHeaders();
+
+  const idIndex = headers.indexOf(String(CONFIG.LOGIN_ID_FIELD).toUpperCase());
+  const passwordIndex = headers.indexOf(String(CONFIG.LOGIN_PASSWORD_FIELD).toUpperCase());
+
+  if (idIndex === -1 || passwordIndex === -1) {
+    throw new Error(
+      'Header sheet Login harus berisi "' +
+      CONFIG.LOGIN_ID_FIELD +
+      '" dan "' +
+      CONFIG.LOGIN_PASSWORD_FIELD +
+      '".'
+    );
+  }
+
+  return {
+    idIndex: idIndex,
+    passwordIndex: passwordIndex
+  };
+}
+
+function getLoginRecords() {
+  const sheet = getLoginSheet();
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+
+  if (lastRow < 2 || lastColumn < 1) {
+    return [];
+  }
+
+  const indexes = getLoginColumnIndexes();
+
+  // Gunakan getValues() agar pembacaan database lebih ringan.
+  const values = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+
+  return values.map(function(row, index) {
+    return {
+      rowNumber: index + 2,
+      idLogin: String(row[indexes.idIndex] || '').trim(),
+      password: String(row[indexes.passwordIndex] || '').trim()
+    };
+  }).filter(function(item) {
+    return item.idLogin || item.password;
+  });
+}
+
+function verifyPassword(password, idLogin) {
+  const inputPassword = String(password || '').trim();
+  const inputId = String(idLogin || '').trim();
+
+  if (!inputPassword) {
+    return {
+      success: false,
+      valid: false,
+      message: 'Password wajib diisi.'
+    };
+  }
+
+  const records = getLoginRecords();
+
+  const matched = records.some(function(record) {
+    const idMatch = !inputId || record.idLogin === inputId;
+    return idMatch && record.password === inputPassword;
+  });
+
+  return {
+    success: true,
+    valid: matched,
+    message: matched
+      ? 'Password sesuai dengan database.'
+      : 'Password tidak sesuai.'
+  };
+}
+
+function changePassword(currentPassword, newPassword, idLogin) {
+  const oldPassword = String(currentPassword || '').trim();
+  const nextPassword = String(newPassword || '').trim();
+  const requestedId = String(idLogin || '').trim();
+
+  if (!oldPassword) {
+    throw new Error('Password lama wajib diisi.');
+  }
+
+  if (!nextPassword || nextPassword.length < 6) {
+    throw new Error('Password baru minimal 6 karakter.');
+  }
+
+  if (oldPassword === nextPassword) {
+    throw new Error('Password baru harus berbeda dari password lama.');
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const sheet = getLoginSheet();
+    const indexes = getLoginColumnIndexes();
+    const records = getLoginRecords();
+
+    const record = records.find(function(item) {
+      const idMatch = !requestedId || item.idLogin === requestedId;
+      return idMatch && item.password === oldPassword;
+    });
+
+    if (!record) {
+      return {
+        success: false,
+        valid: false,
+        message: 'Password lama tidak sesuai dengan database.'
+      };
+    }
+
+    sheet
+      .getRange(record.rowNumber, indexes.passwordIndex + 1)
+      .setValue(nextPassword);
+
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      valid: true,
+      message: 'Password berhasil diperbarui.',
+      idLogin: record.idLogin
+    };
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+// ==================================================
+// AMBIL GOOGLE SHEET
+// ==================================================
+function getSheet() {
+
+  const spreadsheet =
+    SpreadsheetApp.openById(
+      CONFIG.SPREADSHEET_ID
+    );
+
+
+  const sheet =
+    spreadsheet.getSheetByName(
+      CONFIG.SHEET_NAME
+    );
+
+
+  if (!sheet) {
+
+    throw new Error(
+      'Sheet "' +
+      CONFIG.SHEET_NAME +
+      '" tidak ditemukan.'
+    );
+
+  }
+
+
+  return sheet;
+
+}
+
+
+// ==================================================
+// AMBIL HEADER
+// ==================================================
+function getHeaders() {
+
+  const sheet = getSheet();
+
+  const lastColumn =
+    sheet.getLastColumn();
+
+
+  if (lastColumn === 0) {
+    return [];
+  }
+
+
+  return sheet
+    .getRange(
+      1,
+      1,
+      1,
+      lastColumn
+    )
+    .getValues()[0];
+
+}
+
+
+// ==================================================
+// AMBIL FOLDER GOOGLE DRIVE
+// ==================================================
+function getImageFolder() {
+
+  if (!CONFIG.IMAGE_FOLDER_ID) {
+
+    throw new Error(
+      'IMAGE_FOLDER_ID belum diisi.'
+    );
+
+  }
+
+
+  try {
+
+    return DriveApp.getFolderById(
+      CONFIG.IMAGE_FOLDER_ID
+    );
+
+  } catch (error) {
+
+    throw new Error(
+      'Folder Google Drive tidak ditemukan atau tidak dapat diakses.'
+    );
+
+  }
+
+}
+
+
+// ==================================================
+// UPLOAD FOTO BASE64 KE GOOGLE DRIVE
+// ==================================================
+function uploadImageToDrive(
+  base64Data,
+  productId
+) {
+
+  if (!base64Data) {
+    return '';
+  }
+
+
+  const imageData =
+    String(base64Data);
+
+
+  // Pastikan benar-benar Base64 Image
+  if (
+    !imageData.startsWith('data:image/')
+  ) {
+
+    throw new Error(
+      'Format foto tidak valid. Harus berupa Base64 image.'
+    );
+
+  }
+
+
+  const commaIndex =
+    imageData.indexOf(',');
+
+
+  if (commaIndex === -1) {
+
+    throw new Error(
+      'Format Base64 gambar tidak valid.'
+    );
+
+  }
+
+
+  // Pisahkan Header dan Base64
+  const metadata =
+    imageData.substring(
+      0,
+      commaIndex
+    );
+
+
+  const base64Content =
+    imageData.substring(
+      commaIndex + 1
+    );
+
+
+  // Ambil MIME TYPE
+  const mimeMatch =
+    metadata.match(
+      /^data:(image\/[a-zA-Z0-9.+-]+);base64$/
+    );
+
+
+  if (!mimeMatch) {
+
+    throw new Error(
+      'MIME Type gambar tidak valid.'
+    );
+
+  }
+
+
+  const mimeType =
+    mimeMatch[1];
+
+
+  // Tentukan extension
+  let extension = 'jpg';
+
+
+  if (mimeType === 'image/png') {
+    extension = 'png';
+  }
+
+  if (mimeType === 'image/webp') {
+    extension = 'webp';
+  }
+
+  if (mimeType === 'image/gif') {
+    extension = 'gif';
+  }
+
+
+  // Decode Base64
+  const bytes =
+    Utilities.base64Decode(
+      base64Content
+    );
+
+
+  // Nama file
+  const fileName =
+    'PRODUK_' +
+    productId +
+    '_' +
+    new Date().getTime() +
+    '.' +
+    extension;
+
+
+  // Buat Blob
+  const blob =
+    Utilities.newBlob(
+      bytes,
+      mimeType,
+      fileName
+    );
+
+
+  // Ambil folder tujuan
+  const folder =
+    getImageFolder();
+
+
+  // Upload file
+  const file =
+    folder.createFile(blob);
+
+
+  // Izinkan akses melalui link
+  file.setSharing(
+    DriveApp.Access.ANYONE_WITH_LINK,
+    DriveApp.Permission.VIEW
+  );
+
+
+  const fileId =
+    file.getId();
+
+
+  Logger.log(
+    'UPLOAD FOTO BERHASIL: ' +
+    fileId
+  );
+
+
+  // URL gambar
+  return (
+    'https://drive.google.com/uc?export=view&id=' +
+    fileId
+  );
+
+}
+
+
+// ==================================================
+// AMBIL FILE ID DARI URL GOOGLE DRIVE
+// ==================================================
+function getDriveFileId(imageUrl) {
+
+  if (!imageUrl) {
+    return '';
+  }
+
+
+  const url =
+    String(imageUrl);
+
+
+  // Format:
+  // ?id=FILE_ID
+  let match =
+    url.match(
+      /[?&]id=([^&]+)/
+    );
+
+
+  if (match && match[1]) {
+    return match[1];
+  }
+
+
+  // Format:
+  // /d/FILE_ID/
+  match =
+    url.match(
+      /\/d\/([^\/?#]+)/
+    );
+
+
+  if (match && match[1]) {
+    return match[1];
+  }
+
+
+  return '';
+
+}
+
+
+// ==================================================
+// HAPUS FOTO DARI GOOGLE DRIVE
+// ==================================================
+function deleteImageFromDrive(imageUrl) {
+
+  if (!imageUrl) {
+    return true;
+  }
+
+
+  const fileId =
+    getDriveFileId(imageUrl);
+
+
+  // Jika bukan URL Drive
+  if (!fileId) {
+
+    Logger.log(
+      'Bukan URL Google Drive: ' +
+      imageUrl
+    );
+
+    return false;
+
+  }
+
+
+  try {
+
+    const file =
+      DriveApp.getFileById(fileId);
+
+
+    // Pindahkan ke Trash
+    file.setTrashed(true);
+
+
+    Logger.log(
+      'FOTO BERHASIL DIHAPUS: ' +
+      fileId
+    );
+
+
+    return true;
+
+  } catch (error) {
+
+    Logger.log(
+      'ERROR HAPUS FOTO: ' +
+      error.message
+    );
+
+
+    throw new Error(
+      'Gagal menghapus foto lama dari Google Drive.'
+    );
+
+  }
+
+}
+
+
+// ==================================================
+// READ SEMUA DATA
+// ==================================================
+function readData() {
+
+  const sheet =
+    getSheet();
+
+
+  const headers =
+    getHeaders();
+
+
+  const lastRow =
+    sheet.getLastRow();
+
+
+  if (lastRow < 2) {
+
+    return {
+      success: true,
+      data: []
+    };
+
+  }
+
+
+  const values =
+    sheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        headers.length
+      )
+      .getValues();
+
+
+  const data =
+    values.map(function(row) {
+
+      const object = {};
+
+
+      headers.forEach(
+        function(header, index) {
+
+          object[header] =
+            row[index];
+
+        }
+      );
+
+
+      return object;
+
+    });
+
+
+  return {
+    success: true,
+    data: data
+  };
+
+}
+
+
+// ==================================================
+// GET SATU DATA
+// ==================================================
+function getData(id) {
+
+  const sheet =
+    getSheet();
+
+
+  const headers =
+    getHeaders();
+
+
+  const idIndex =
+    headers.indexOf(
+      CONFIG.ID_FIELD
+    );
+
+
+  if (idIndex === -1) {
+
+    throw new Error(
+      'Kolom ' +
+      CONFIG.ID_FIELD +
+      ' tidak ditemukan.'
+    );
+
+  }
+
+
+  const values =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  for (
+    let i = 1;
+    i < values.length;
+    i++
+  ) {
+
+    if (
+      String(values[i][idIndex]) ===
+      String(id)
+    ) {
+
+      const object = {};
+
+
+      headers.forEach(
+        function(header, index) {
+
+          object[header] =
+            values[i][index];
+
+        }
+      );
+
+
+      return {
+        success: true,
+        data: object
+      };
+
+    }
+
+  }
+
+
+  return {
+    success: false,
+    message: 'Data tidak ditemukan.'
+  };
+
+}
+
+
+// ==================================================
+// CREATE DATA + FOTO
+// ==================================================
+function createData(data) {
+
+  const sheet =
+    getSheet();
+
+
+  const headers =
+    getHeaders();
+
+
+  // Buat ID baru
+  const id =
+    Utilities.getUuid();
+
+
+  // =================================================
+  // UPLOAD FOTO
+  // =================================================
+
+  if (
+    data[CONFIG.IMAGE_FIELD] &&
+    String(
+      data[CONFIG.IMAGE_FIELD]
+    ).startsWith('data:image/')
+  ) {
+
+    const imageUrl =
+      uploadImageToDrive(
+        data[CONFIG.IMAGE_FIELD],
+        id
+      );
+
+
+    // Ganti Base64 dengan URL Google Drive
+    data[CONFIG.IMAGE_FIELD] =
+      imageUrl;
+
+  }
+
+
+  // Jika tidak ada foto
+  if (
+    !data[CONFIG.IMAGE_FIELD]
+  ) {
+
+    data[CONFIG.IMAGE_FIELD] =
+      '';
+
+  }
+
+
+  // Hapus data sementara
+  delete data.DRIVE_FOLDER_ID;
+  delete data.IMAGE_CHANGED;
+
+
+  // Buat baris sesuai Header
+  const row =
+    headers.map(
+      function(header) {
+
+        if (
+          header === CONFIG.ID_FIELD
+        ) {
+
+          return id;
+
+        }
+
+
+        return Object.prototype.hasOwnProperty.call(
+          data,
+          header
+        )
+          ? data[header]
+          : '';
+
+      }
+    );
+
+
+  // Simpan ke Spreadsheet
+  sheet.appendRow(row);
+
+
+  return {
+    success: true,
+    message:
+      'Data produk berhasil disimpan.',
+    id: id,
+    imageUrl:
+      data[CONFIG.IMAGE_FIELD]
+  };
+
+}
+
+
+// ==================================================
+// UPDATE DATA + FOTO
+// ==================================================
+function updateData(
+  id,
+  data
+) {
+
+  if (!id) {
+
+    throw new Error(
+      'ID produk tidak ditemukan.'
+    );
+
+  }
+
+
+  const sheet =
+    getSheet();
+
+
+  const headers =
+    getHeaders();
+
+
+  const idIndex =
+    headers.indexOf(
+      CONFIG.ID_FIELD
+    );
+
+
+  const imageIndex =
+    headers.indexOf(
+      CONFIG.IMAGE_FIELD
+    );
+
+
+  if (idIndex === -1) {
+
+    throw new Error(
+      'Kolom ID_RING tidak ditemukan.'
+    );
+
+  }
+
+
+  if (imageIndex === -1) {
+
+    throw new Error(
+      'Kolom URL_GAMBAR tidak ditemukan.'
+    );
+
+  }
+
+
+  const values =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  for (
+    let i = 1;
+    i < values.length;
+    i++
+  ) {
+
+    if (
+      String(values[i][idIndex]) !==
+      String(id)
+    ) {
+
+      continue;
+
+    }
+
+
+    const rowNumber =
+      i + 1;
+
+
+    // Foto lama
+    const oldImageUrl =
+      values[i][imageIndex] || '';
+
+
+    // Apakah URL_GAMBAR dikirim?
+    const imageWasSent =
+      Object.prototype.hasOwnProperty.call(
+        data,
+        CONFIG.IMAGE_FIELD
+      );
+
+
+    // ===============================================
+    // 1. FOTO BARU DIPILIH
+    // ===============================================
+    if (
+      imageWasSent &&
+      data[CONFIG.IMAGE_FIELD] &&
+      String(
+        data[CONFIG.IMAGE_FIELD]
+      ).startsWith('data:image/')
+    ) {
+
+      // Upload foto baru terlebih dahulu
+      const newImageUrl =
+        uploadImageToDrive(
+          data[CONFIG.IMAGE_FIELD],
+          id
+        );
+
+
+      // Setelah upload berhasil,
+      // hapus foto lama
+      if (oldImageUrl) {
+
+        deleteImageFromDrive(
+          oldImageUrl
+        );
+
+      }
+
+
+      // Simpan URL foto baru
+      data[CONFIG.IMAGE_FIELD] =
+        newImageUrl;
+
+    }
+
+
+    // ===============================================
+    // 2. FOTO DIHAPUS OLEH USER
+    // ===============================================
+    else if (
+      imageWasSent &&
+      data[CONFIG.IMAGE_FIELD] === ''
+    ) {
+
+      // Hapus foto lama
+      if (oldImageUrl) {
+
+        deleteImageFromDrive(
+          oldImageUrl
+        );
+
+      }
+
+
+      // Kosongkan kolom foto
+      data[CONFIG.IMAGE_FIELD] =
+        '';
+
+    }
+
+
+    // ===============================================
+    // 3. FOTO TIDAK DIUBAH
+    // ===============================================
+    // Jika URL_GAMBAR tidak dikirim,
+    // foto lama tetap aman.
+
+
+    // Hapus data sementara
+    delete data.DRIVE_FOLDER_ID;
+    delete data.IMAGE_CHANGED;
+
+
+    // Update Spreadsheet
+    headers.forEach(
+      function(header, index) {
+
+        if (
+          header === CONFIG.ID_FIELD
+        ) {
+          return;
+        }
+
+
+        if (
+          Object.prototype.hasOwnProperty.call(
+            data,
+            header
+          )
+        ) {
+
+          sheet
+            .getRange(
+              rowNumber,
+              index + 1
+            )
+            .setValue(
+              data[header]
+            );
+
+        }
+
+      }
+    );
+
+
+    return {
+      success: true,
+      message:
+        'Data produk berhasil diperbarui.',
+      imageUrl:
+        imageWasSent
+          ? data[CONFIG.IMAGE_FIELD]
+          : oldImageUrl
+    };
+
+  }
+
+
+  return {
+    success: false,
+    message: 'Data produk tidak ditemukan.'
+  };
+
+}
+
+
+// ==================================================
+// DELETE PRODUK + FOTO
+// ==================================================
+function deleteData(id) {
+
+  if (!id) {
+
+    throw new Error(
+      'ID produk tidak ditemukan.'
+    );
+
+  }
+
+
+  const sheet =
+    getSheet();
+
+
+  const headers =
+    getHeaders();
+
+
+  const idIndex =
+    headers.indexOf(
+      CONFIG.ID_FIELD
+    );
+
+
+  const imageIndex =
+    headers.indexOf(
+      CONFIG.IMAGE_FIELD
+    );
+
+
+  if (idIndex === -1) {
+
+    throw new Error(
+      'Kolom ID_RING tidak ditemukan.'
+    );
+
+  }
+
+
+  const values =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  for (
+    let i = 1;
+    i < values.length;
+    i++
+  ) {
+
+    if (
+      String(values[i][idIndex]) !==
+      String(id)
+    ) {
+
+      continue;
+
+    }
+
+
+    // Ambil URL foto
+    const imageUrl =
+      imageIndex > -1
+        ? values[i][imageIndex]
+        : '';
+
+
+    // ===============================================
+    // HAPUS FOTO DARI GOOGLE DRIVE
+    // ===============================================
+
+    if (imageUrl) {
+
+      deleteImageFromDrive(
+        imageUrl
+      );
+
+    }
+
+
+    // ===============================================
+    // HAPUS BARIS SPREADSHEET
+    // ===============================================
+
+    sheet.deleteRow(
+      i + 1
+    );
+
+
+    return {
+      success: true,
+      message:
+        'Produk dan foto berhasil dihapus.'
+    };
+
+  }
+
+
+  return {
+    success: false,
+    message:
+      'Produk tidak ditemukan.'
+  };
+
+}
+
+// ==================================================
+// PENGATURAN RESI
+// Sheet: Pengaturan_Resi
+// Kolom: ID_RESI | JUDUL | SUBJUDUL | ALAMAT | TELEPON | FOOTER
+// ==================================================
+function getReceiptSettings() {
+  const defaults = {
+    ID_RESI: 'RESI-UTAMA',
+    JUDUL: 'JOANNA ATHALIYA',
+    SUBJUDUL: 'PIERCING STUDIO',
+    ALAMAT: '',
+    TELEPON: '',
+    FOOTER: 'Terima kasih atas kunjungan Anda'
+  };
+
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(CONFIG.RECEIPT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.RECEIPT_SHEET_NAME);
+    sheet.appendRow(['ID_RESI','JUDUL','SUBJUDUL','ALAMAT','TELEPON','FOOTER']);
+  }
+
+  if (sheet.getLastRow() < 2) {
+    return { success: true, settings: defaults };
+  }
+
+  const headers = getSheetHeaders(sheet);
+  const values = sheet.getRange(2,1,1,headers.length).getValues()[0];
+  const row = {};
+  headers.forEach(function(header,index){ row[String(header).trim()] = values[index]; });
+
+  return {
+    success: true,
+    settings: {
+      ID_RESI: String(row.ID_RESI || defaults.ID_RESI),
+      JUDUL: String(row.JUDUL || defaults.JUDUL),
+      SUBJUDUL: String(row.SUBJUDUL || defaults.SUBJUDUL),
+      ALAMAT: String(row.ALAMAT || ''),
+      TELEPON: String(row.TELEPON || ''),
+      FOOTER: String(row.FOOTER || defaults.FOOTER)
+    }
+  };
+}
+
+function saveReceiptSettings(data) {
+  data = data || {};
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(CONFIG.RECEIPT_SHEET_NAME);
+  const requiredHeaders = ['ID_RESI','JUDUL','SUBJUDUL','ALAMAT','TELEPON','FOOTER'];
+
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.RECEIPT_SHEET_NAME);
+    sheet.appendRow(requiredHeaders);
+  }
+
+  const currentHeaders = getSheetHeaders(sheet);
+  if (currentHeaders.join('|') !== requiredHeaders.join('|')) {
+    sheet.getRange(1,1,1,requiredHeaders.length).setValues([requiredHeaders]);
+  }
+
+  const row = [[
+    String(data.ID_RESI || 'RESI-UTAMA'),
+    String(data.JUDUL || ''),
+    String(data.SUBJUDUL || ''),
+    String(data.ALAMAT || ''),
+    String(data.TELEPON || ''),
+    String(data.FOOTER || '')
+  ]];
+
+  if (sheet.getLastRow() < 2) sheet.getRange(2,1,1,requiredHeaders.length).setValues(row);
+  else sheet.getRange(2,1,1,requiredHeaders.length).setValues(row);
+
+  SpreadsheetApp.flush();
+  return { success:true, message:'Pengaturan resi berhasil disimpan.', settings:getReceiptSettings().settings };
+}
+
+
+// ==================================================
+// ==================================================
+// FITUR TRANSAKSI + HISTORY + REFUND
+// TAMBAHAN BARU - TIDAK MENGUBAH CRUD PRODUK LAMA
+// ==================================================
+// ==================================================
+
+
+// ==================================================
+// AMBIL SHEET BERDASARKAN NAMA
+// ==================================================
+function getSheetByName(sheetName) {
+
+  const spreadsheet =
+    SpreadsheetApp.openById(
+      CONFIG.SPREADSHEET_ID
+    );
+
+  const sheet =
+    spreadsheet.getSheetByName(
+      sheetName
+    );
+
+  if (!sheet) {
+    throw new Error(
+      'Sheet "' + sheetName + '" tidak ditemukan.'
+    );
+  }
+
+  return sheet;
+
+}
+
+
+// ==================================================
+// AMBIL HEADER DARI SHEET TERTENTU
+// ==================================================
+function getSheetHeaders(sheet) {
+
+  const lastColumn =
+    sheet.getLastColumn();
+
+  if (lastColumn < 1) {
+    return [];
+  }
+
+  return sheet
+    .getRange(1, 1, 1, lastColumn)
+    .getValues()[0]
+    .map(function(header) {
+      return String(header).trim();
+    });
+
+}
+
+
+// ==================================================
+// CARI INDEX HEADER
+// Mendukung beberapa nama header agar fleksibel
+// ==================================================
+function findHeaderIndex(headers, names) {
+
+  for (let i = 0; i < names.length; i++) {
+
+    const index =
+      headers.indexOf(names[i]);
+
+    if (index > -1) {
+      return index;
+    }
+
+  }
+
+  return -1;
+
+}
+
+
+// ==================================================
+// AMBIL NILAI FIELD DENGAN ALIAS
+// ==================================================
+function getObjectValue(object, names, defaultValue) {
+
+  object = object || {};
+
+  for (let i = 0; i < names.length; i++) {
+
+    const key = names[i];
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        object,
+        key
+      )
+    ) {
+      return object[key];
+    }
+
+  }
+
+  return defaultValue;
+
+}
+
+
+// ==================================================
+// BUAT ID TRANSAKSI
+// ==================================================
+function generateTransactionId() {
+
+  return (
+    'TRX-' +
+    Utilities.formatDate(
+      new Date(),
+      Session.getScriptTimeZone(),
+      'yyyyMMdd-HHmmss'
+    ) +
+    '-' +
+    Utilities.getUuid()
+      .substring(0, 8)
+      .toUpperCase()
+  );
+
+}
+
+
+// ==================================================
+// BUAT ID DETAIL
+// ==================================================
+function generateDetailId() {
+
+  return (
+    'DTL-' +
+    Utilities.getUuid()
+      .substring(0, 12)
+      .toUpperCase()
+  );
+
+}
+
+
+// ==================================================
+// AMBIL INDEX PRODUK BERDASARKAN ID_RING
+// ==================================================
+function getProductRowMap() {
+
+  const sheet = getSheet();
+  const headers = getHeaders();
+
+  const idIndex =
+    findHeaderIndex(
+      headers,
+      [
+        CONFIG.PRODUCT_ID_FIELD,
+        'ID_PRODUK'
+      ]
+    );
+
+  const stockIndex =
+    findHeaderIndex(
+      headers,
+      [
+        CONFIG.PRODUCT_STOCK_FIELD,
+        'STOK'
+      ]
+    );
+
+  const priceIndex =
+    findHeaderIndex(
+      headers,
+      [
+        'HARGA_SATUAN',
+        'HARGA',
+        'PRICE'
+      ]
+    );
+
+  const nameIndex =
+    findHeaderIndex(
+      headers,
+      [
+        'NAMA_PRODUK',
+        'NAMA'
+      ]
+    );
+
+  if (idIndex === -1) {
+    throw new Error(
+      'Kolom ID_RING / ID_PRODUK tidak ditemukan pada Input_Produk.'
+    );
+  }
+
+  if (stockIndex === -1) {
+    throw new Error(
+      'Kolom STOK_PRODUK tidak ditemukan pada Input_Produk.'
+    );
+  }
+
+  const lastRow =
+    sheet.getLastRow();
+
+  const map = {};
+
+  if (lastRow < 2) {
+    return {
+      sheet: sheet,
+      headers: headers,
+      idIndex: idIndex,
+      stockIndex: stockIndex,
+      priceIndex: priceIndex,
+      nameIndex: nameIndex,
+      products: map
+    };
+  }
+
+  const values =
+    sheet.getRange(
+      2,
+      1,
+      lastRow - 1,
+      headers.length
+    ).getValues();
+
+  values.forEach(
+    function(row, index) {
+
+      const productId =
+        String(row[idIndex]).trim();
+
+      if (!productId) {
+        return;
+      }
+
+      map[productId] = {
+        rowNumber: index + 2,
+        row: row,
+        stock: Number(row[stockIndex]) || 0,
+        price:
+          priceIndex > -1
+            ? Number(row[priceIndex]) || 0
+            : 0,
+        name:
+          nameIndex > -1
+            ? row[nameIndex]
+            : ''
+      };
+
+    }
+  );
+
+  return {
+    sheet: sheet,
+    headers: headers,
+    idIndex: idIndex,
+    stockIndex: stockIndex,
+    priceIndex: priceIndex,
+    nameIndex: nameIndex,
+    products: map
+  };
+
+}
+
+
+// ==================================================
+// BUAT BARIS BERDASARKAN HEADER
+// ==================================================
+function buildRowFromHeaders(headers, data) {
+
+  return headers.map(
+    function(header) {
+
+      return Object.prototype.hasOwnProperty.call(
+        data,
+        header
+      )
+        ? data[header]
+        : '';
+
+    }
+  );
+
+}
+
+
+// ==================================================
+// SIMPAN TRANSAKSI PENJUALAN
+//
+// FORMAT REQUEST YANG DIDUKUNG:
+//
+// {
+//   action: "createTransaction",
+//   data: {
+//     items: [
+//       {
+//         ID_RING: "...",
+//         HARGA_SATUAN: 80000,
+//         JUMLAH: 2
+//       }
+//     ],
+//     METODE_PEMBAYARAN: "CASH"
+//   }
+// }
+// ==================================================
+function createTransaction(data) {
+
+  const lock =
+    LockService.getScriptLock();
+
+  lock.waitLock(30000);
+
+  try {
+
+    data = data || {};
+
+    const rawItems =
+      getObjectValue(
+        data,
+        [
+          'items',
+          'ITEMS',
+          'cart',
+          'CART',
+          'produk',
+          'PRODUK'
+        ],
+        []
+      );
+
+    const items =
+      Array.isArray(rawItems)
+        ? rawItems
+        : [];
+
+    if (items.length === 0) {
+      throw new Error(
+        'Keranjang belanja masih kosong.'
+      );
+    }
+
+    const productData =
+      getProductRowMap();
+
+    // =================================================
+    // GABUNGKAN PRODUK YANG SAMA
+    // =================================================
+    const grouped = {};
+
+    items.forEach(
+      function(item) {
+
+        const productId =
+          String(
+            getObjectValue(
+              item,
+              [
+                'ID_RING',
+                'ID_PRODUK',
+                'id',
+                'ID'
+              ],
+              ''
+            )
+          ).trim();
+
+        const quantity =
+          Number(
+            getObjectValue(
+              item,
+              [
+                'JUMLAH',
+                'jumlah',
+                'QTY',
+                'qty',
+                'quantity'
+              ],
+              0
+            )
+          );
+
+        if (!productId) {
+          throw new Error(
+            'ID produk tidak ditemukan pada keranjang.'
+          );
+        }
+
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          throw new Error(
+            'Jumlah produk harus lebih dari 0.'
+          );
+        }
+
+        if (!grouped[productId]) {
+          grouped[productId] = {
+            item: item,
+            quantity: 0
+          };
+        }
+
+        grouped[productId].quantity += quantity;
+
+      }
+    );
+
+    // =================================================
+    // VALIDASI STOK SEBELUM MENYIMPAN APA PUN
+    // =================================================
+    const normalizedItems = [];
+
+    Object.keys(grouped).forEach(
+      function(productId) {
+
+        const groupedItem =
+          grouped[productId];
+
+        const product =
+          productData.products[productId];
+
+        if (!product) {
+          throw new Error(
+            'Produk dengan ID "' +
+            productId +
+            '" tidak ditemukan.'
+          );
+        }
+
+        if (
+          product.stock <
+          groupedItem.quantity
+        ) {
+          throw new Error(
+            'Stok produk "' +
+            product.name +
+            '" tidak mencukupi. Stok tersedia: ' +
+            product.stock
+          );
+        }
+
+        const sentPrice =
+          Number(
+            getObjectValue(
+              groupedItem.item,
+              [
+                'HARGA_SATUAN',
+                'hargaSatuan',
+                'HARGA',
+                'harga',
+                'price'
+              ],
+              0
+            )
+          );
+
+        const price =
+          sentPrice > 0
+            ? sentPrice
+            : product.price;
+
+        normalizedItems.push({
+          productId: productId,
+          productName: product.name,
+          price: price,
+          quantity: groupedItem.quantity,
+          subtotal:
+            price *
+            groupedItem.quantity,
+          rowNumber: product.rowNumber,
+          currentStock: product.stock
+        });
+
+      }
+    );
+
+    const subtotal =
+      normalizedItems.reduce(
+        function(sum, item) {
+          return sum + item.subtotal;
+        },
+        0
+      );
+
+    // Diskon dan potongan harga dari aplikasi digunakan agar total Pesanan
+    // sama dengan total pada resi.
+    const discountPercent = Math.min(100, Math.max(0, Number(getObjectValue(data, ['DISKON_PERSEN','discountPercent'], 0)) || 0));
+    const sentDiscount = Math.max(0, Number(getObjectValue(data, ['DISKON_NOMINAL','discount'], 0)) || 0);
+    const discount = Math.min(subtotal, sentDiscount || Math.floor(subtotal * (discountPercent / 100)));
+    const sentPriceCut = Math.max(0, Number(getObjectValue(data, ['POTONGAN_HARGA','priceCut'], 0)) || 0);
+    const priceCut = Math.min(sentPriceCut, Math.max(0, subtotal - discount));
+    const total = Math.max(0, subtotal - discount - priceCut);
+
+    // Gunakan ID dari aplikasi bila tersedia agar nomor pada resi sama
+    // dengan nomor transaksi yang disimpan di Spreadsheet.
+    const requestedTransactionId = String(
+      getObjectValue(data, ['ID_PEMESANAN','idPesanan','transactionId'], '')
+    ).trim();
+
+    const transactionId = requestedTransactionId || generateTransactionId();
+
+    const now =
+      new Date();
+
+    const orderSheet =
+      getSheetByName(
+        CONFIG.ORDER_SHEET_NAME
+      );
+
+    const detailSheet =
+      getSheetByName(
+        CONFIG.DETAIL_ORDER_SHEET_NAME
+      );
+
+    const orderHeaders =
+      getSheetHeaders(orderSheet);
+
+    const detailHeaders =
+      getSheetHeaders(detailSheet);
+
+    // =================================================
+    // DATA HEADER PESANAN
+    // =================================================
+    const paymentMethod =
+      getObjectValue(
+        data,
+        [
+          'METODE_PEMBAYARAN',
+          'metodePembayaran',
+          'paymentMethod',
+          'PEMBAYARAN'
+        ],
+        ''
+      );
+
+    const orderData = {
+      ID_PEMESANAN: transactionId,
+      TANGGAL: now,
+      JAM:
+        Utilities.formatDate(
+          now,
+          Session.getScriptTimeZone(),
+          'HH:mm:ss'
+        ),
+      TOTAL_BELIAN: total,
+      TOTAL_PEMBELIAN: total,
+      METODE_PEMBAYARAN: paymentMethod,
+      STATUS_TRANSAKSI: 'SELESAI',
+      STATUS_REFUND: 'TIDAK',
+      TANGGAL_REFUND: ''
+    };
+
+    // Hanya header yang ada pada sheet yang akan diisi.
+    orderSheet.appendRow(
+      buildRowFromHeaders(
+        orderHeaders,
+        orderData
+      )
+    );
+
+    // =================================================
+    // SIMPAN SEMUA DETAIL PESANAN
+    // =================================================
+    const detailRows =
+      normalizedItems.map(
+        function(item) {
+
+          const detailData = {
+            ID_DETAIL: generateDetailId(),
+            ID_PEMESANAN: transactionId,
+            ID_PRODUK: item.productId,
+            ID_RING: item.productId,
+            HARGA_SATUAN: item.price,
+            JUMLAH: item.quantity,
+            SUBTOTAL: item.subtotal
+          };
+
+          return buildRowFromHeaders(
+            detailHeaders,
+            detailData
+          );
+
+        }
+      );
+
+    if (detailRows.length > 0) {
+      detailSheet
+        .getRange(
+          detailSheet.getLastRow() + 1,
+          1,
+          detailRows.length,
+          detailHeaders.length
+        )
+        .setValues(detailRows);
+    }
+
+    // =================================================
+    // KURANGI STOK PRODUK
+    // =================================================
+    normalizedItems.forEach(
+      function(item) {
+
+        const newStock =
+          item.currentStock -
+          item.quantity;
+
+        productData.sheet
+          .getRange(
+            item.rowNumber,
+            productData.stockIndex + 1
+          )
+          .setValue(newStock);
+
+      }
+    );
+
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      message:
+        'Pembayaran berhasil. Transaksi tersimpan ke database.',
+      id: transactionId,
+      ID_PEMESANAN: transactionId,
+      total: total,
+      TOTAL_BELIAN: total,
+      items: normalizedItems.length
+    };
+
+  } finally {
+
+    lock.releaseLock();
+
+  }
+
+}
+
+
+// ==================================================
+// BACA HISTORY TRANSAKSI
+//
+// period:
+// ALL / HARIAN / MINGGUAN / BULANAN
+// ==================================================
+function readTransactionHistory(period) {
+
+  const sheet =
+    getSheetByName(
+      CONFIG.ORDER_SHEET_NAME
+    );
+
+  const headers =
+    getSheetHeaders(sheet);
+
+  const lastRow =
+    sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return {
+      success: true,
+      data: []
+    };
+  }
+
+  const values =
+    sheet.getRange(
+      2,
+      1,
+      lastRow - 1,
+      headers.length
+    ).getValues();
+
+  const dateIndex =
+    findHeaderIndex(
+      headers,
+      ['TANGGAL']
+    );
+
+  const normalizedPeriod =
+    String(period || 'ALL')
+      .toUpperCase();
+
+  const now =
+    new Date();
+
+  const startOfToday =
+    new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
+
+  const filtered =
+    values.filter(
+      function(row) {
+
+        if (
+          normalizedPeriod === 'ALL' ||
+          dateIndex === -1
+        ) {
+          return true;
+        }
+
+        const transactionDate =
+          new Date(row[dateIndex]);
+
+        if (
+          isNaN(transactionDate.getTime())
+        ) {
+          return false;
+        }
+
+        if (
+          normalizedPeriod === 'HARIAN'
+        ) {
+          return (
+            transactionDate.getFullYear() === now.getFullYear() &&
+            transactionDate.getMonth() === now.getMonth() &&
+            transactionDate.getDate() === now.getDate()
+          );
+        }
+
+        if (
+          normalizedPeriod === 'MINGGUAN'
+        ) {
+          const sevenDaysAgo =
+            new Date(startOfToday);
+
+          sevenDaysAgo.setDate(
+            sevenDaysAgo.getDate() - 6
+          );
+
+          return (
+            transactionDate >= sevenDaysAgo &&
+            transactionDate <= now
+          );
+        }
+
+        if (
+          normalizedPeriod === 'BULANAN'
+        ) {
+          return (
+            transactionDate.getFullYear() === now.getFullYear() &&
+            transactionDate.getMonth() === now.getMonth()
+          );
+        }
+
+        return true;
+
+      }
+    );
+
+  const data =
+    filtered.map(
+      function(row) {
+
+        const object = {};
+
+        headers.forEach(
+          function(header, index) {
+            object[header] = row[index];
+          }
+        );
+
+        return object;
+
+      }
+    );
+
+  return {
+    success: true,
+    data: data
+  };
+
+}
+
+
+// ==================================================
+// AMBIL DETAIL SATU TRANSAKSI
+// ==================================================
+function getTransactionDetail(transactionId) {
+
+  if (!transactionId) {
+    throw new Error(
+      'ID_PEMESANAN tidak ditemukan.'
+    );
+  }
+
+  const orderSheet =
+    getSheetByName(
+      CONFIG.ORDER_SHEET_NAME
+    );
+
+  const detailSheet =
+    getSheetByName(
+      CONFIG.DETAIL_ORDER_SHEET_NAME
+    );
+
+  const orderHeaders =
+    getSheetHeaders(orderSheet);
+
+  const detailHeaders =
+    getSheetHeaders(detailSheet);
+
+  const orderValues =
+    orderSheet.getDataRange()
+      .getValues();
+
+  const detailValues =
+    detailSheet.getDataRange()
+      .getValues();
+
+  const orderIdIndex =
+    findHeaderIndex(
+      orderHeaders,
+      ['ID_PEMESANAN']
+    );
+
+  const detailOrderIdIndex =
+    findHeaderIndex(
+      detailHeaders,
+      ['ID_PEMESANAN']
+    );
+
+  if (
+    orderIdIndex === -1 ||
+    detailOrderIdIndex === -1
+  ) {
+    throw new Error(
+      'Kolom ID_PEMESANAN tidak ditemukan.'
+    );
+  }
+
+  let order = null;
+
+  for (
+    let i = 1;
+    i < orderValues.length;
+    i++
+  ) {
+
+    if (
+      String(orderValues[i][orderIdIndex]) ===
+      String(transactionId)
+    ) {
+
+      order = {};
+
+      orderHeaders.forEach(
+        function(header, index) {
+          order[header] =
+            orderValues[i][index];
+        }
+      );
+
+      break;
+
+    }
+
+  }
+
+  if (!order) {
+    return {
+      success: false,
+      message:
+        'Transaksi tidak ditemukan.'
+    };
+  }
+
+  const details = [];
+
+  for (
+    let i = 1;
+    i < detailValues.length;
+    i++
+  ) {
+
+    if (
+      String(
+        detailValues[i][detailOrderIdIndex]
+      ) ===
+      String(transactionId)
+    ) {
+
+      const detail = {};
+
+      detailHeaders.forEach(
+        function(header, index) {
+          detail[header] =
+            detailValues[i][index];
+        }
+      );
+
+      details.push(detail);
+
+    }
+
+  }
+
+  return {
+    success: true,
+    data: {
+      order: order,
+      details: details
+    }
+  };
+
+}
+
+
+// ==================================================
+// REFUND TRANSAKSI
+//
+// ALUR:
+// 1. Cari Pesanan
+// 2. Pastikan belum pernah REFUND
+// 3. Ambil semua Detail_Pesanan
+// 4. Tambahkan stok setiap produk
+// 5. Update status REFUND
+//
+// REFUND HANYA DAPAT DILAKUKAN SEKALI
+// ==================================================
+function refundTransaction(transactionId, refundData) {
+
+  if (!transactionId) {
+    throw new Error('ID_PEMESANAN tidak ditemukan untuk refund.');
+  }
+
+  refundData = refundData || {};
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+
+    const orderSheet = getSheetByName(CONFIG.ORDER_SHEET_NAME);
+    const detailSheet = getSheetByName(CONFIG.DETAIL_ORDER_SHEET_NAME);
+
+    const orderHeaders = getSheetHeaders(orderSheet);
+    const detailHeaders = getSheetHeaders(detailSheet);
+
+    const orderIdIndex = findHeaderIndex(orderHeaders, ['ID_PEMESANAN']);
+    const totalPurchaseIndex = findHeaderIndex(orderHeaders, ['TOTAL_PEMBELIAN']);
+    const statusTransactionIndex = findHeaderIndex(orderHeaders, ['STATUS_TRANSAKSI']);
+    const statusRefundIndex = findHeaderIndex(orderHeaders, ['STATUS_REFUND']);
+    const refundDateIndex = findHeaderIndex(orderHeaders, ['TANGGAL_REFUND']);
+
+    const detailIdIndex = findHeaderIndex(detailHeaders, ['ID_DETAIL']);
+    const detailOrderIdIndex = findHeaderIndex(detailHeaders, ['ID_PEMESANAN']);
+    const detailProductIdIndex = findHeaderIndex(detailHeaders, ['ID_PRODUK', 'ID_RING']);
+    const detailPriceIndex = findHeaderIndex(detailHeaders, ['HARGA_SATUAN', 'HARGA']);
+    const detailQuantityIndex = findHeaderIndex(detailHeaders, ['JUMLAH', 'QTY']);
+    const detailSubtotalIndex = findHeaderIndex(detailHeaders, ['SUBTOTAL']);
+
+    if (
+      orderIdIndex === -1 ||
+      detailOrderIdIndex === -1 ||
+      detailProductIdIndex === -1 ||
+      detailQuantityIndex === -1
+    ) {
+      throw new Error('Struktur header Pesanan atau Detail_Pesanan belum sesuai.');
+    }
+
+    const orderValues = orderSheet.getDataRange().getValues();
+
+    let orderRowNumber = -1;
+
+    for (let i = 1; i < orderValues.length; i++) {
+      if (String(orderValues[i][orderIdIndex]) === String(transactionId)) {
+        orderRowNumber = i + 1;
+        break;
+      }
+    }
+
+    if (orderRowNumber === -1) {
+      throw new Error('Transaksi tidak ditemukan.');
+    }
+
+    const orderRow = orderValues[orderRowNumber - 1];
+
+    const currentRefundStatus =
+      statusRefundIndex > -1
+        ? String(orderRow[statusRefundIndex]).toUpperCase()
+        : '';
+
+    const currentTransactionStatus =
+      statusTransactionIndex > -1
+        ? String(orderRow[statusTransactionIndex]).toUpperCase()
+        : '';
+
+    // Jika seluruh transaksi sudah selesai di-refund, tidak dapat diubah lagi.
+    if (currentRefundStatus === 'YA' || currentTransactionStatus === 'REFUND') {
+      throw new Error('Transaksi ini sudah selesai di-refund.');
+    }
+
+    const requestedItems =
+      Array.isArray(refundData.refundItems)
+        ? refundData.refundItems
+        : [];
+
+    const requestedByDetail = {};
+
+    requestedItems.forEach(function(item) {
+      const detailId = String(item.ID_DETAIL || '').trim();
+      if (detailId) requestedByDetail[detailId] = item;
+    });
+
+    const detailValues = detailSheet.getDataRange().getValues();
+
+    const groupedRefund = {};
+    const detailUpdates = [];
+
+    let totalRefundQty = 0;
+    let remainingTotalQty = 0;
+    let newOrderTotal = 0;
+    let found = false;
+
+    for (let i = 1; i < detailValues.length; i++) {
+
+      const row = detailValues[i];
+
+      if (String(row[detailOrderIdIndex]) !== String(transactionId)) {
+        continue;
+      }
+
+      found = true;
+
+      const productId = String(row[detailProductIdIndex]).trim();
+      const oldQuantity = Number(row[detailQuantityIndex]) || 0;
+
+      const detailId =
+        detailIdIndex > -1
+          ? String(row[detailIdIndex]).trim()
+          : '';
+
+      let requestItem =
+        detailId && requestedByDetail[detailId]
+          ? requestedByDetail[detailId]
+          : null;
+
+      // Cadangan jika ID_DETAIL tidak tersedia.
+      if (!requestItem && requestedItems.length) {
+        requestItem = requestedItems.find(function(item) {
+          return String(item.ID_PRODUK || item.ID_RING || '').trim() === productId;
+        });
+      }
+
+      /*
+       * LOGIKA REFUND BERTAHAP
+       * ======================
+       * JUMLAH_REFUND adalah jumlah barang yang benar-benar dikembalikan.
+       * Contoh:
+       *   Dibeli sebelumnya = 10
+       *   Tetap dibeli      = 5
+       *   JUMLAH_REFUND     = 5
+       *
+       * Maka STOK hanya bertambah 5, BUKAN 10.
+       */
+      let remainingQuantity = oldQuantity;
+      let refundQuantity = 0;
+
+      if (requestedItems.length === 0) {
+        // Tetap kompatibel dengan sistem lama: tanpa detail berarti refund penuh.
+        refundQuantity = oldQuantity;
+        remainingQuantity = 0;
+
+      } else if (requestItem) {
+
+        const explicitRefund =
+          requestItem.JUMLAH_REFUND ??
+          requestItem.QTY_REFUND ??
+          requestItem.REFUND_QTY;
+
+        if (
+          explicitRefund !== undefined &&
+          explicitRefund !== null &&
+          explicitRefund !== ''
+        ) {
+
+          refundQuantity = Number(explicitRefund);
+
+          if (
+            !Number.isFinite(refundQuantity) ||
+            refundQuantity < 0 ||
+            refundQuantity > oldQuantity
+          ) {
+            throw new Error(
+              'Jumlah refund untuk produk "' + productId + '" tidak valid.'
+            );
+          }
+
+          refundQuantity = Math.floor(refundQuantity);
+          remainingQuantity = oldQuantity - refundQuantity;
+
+        } else {
+
+          // Cadangan untuk payload versi sebelumnya.
+          remainingQuantity = Number(
+            requestItem.SISA_JUMLAH ??
+            requestItem.JUMLAH_TERSISA ??
+            requestItem.JUMLAH
+          );
+
+          if (
+            !Number.isFinite(remainingQuantity) ||
+            remainingQuantity < 0 ||
+            remainingQuantity > oldQuantity
+          ) {
+            throw new Error(
+              'Jumlah setelah refund untuk produk "' + productId + '" tidak valid.'
+            );
+          }
+
+          remainingQuantity = Math.floor(remainingQuantity);
+          refundQuantity = oldQuantity - remainingQuantity;
+        }
+
+      } else {
+        // Produk yang tidak dipilih tetap dibeli dan stoknya tidak berubah.
+        remainingQuantity = oldQuantity;
+        refundQuantity = 0;
+      }
+
+      const price =
+        detailPriceIndex > -1
+          ? Number(row[detailPriceIndex]) || 0
+          : 0;
+
+      const newSubtotal = price * remainingQuantity;
+
+      if (refundQuantity > 0) {
+        groupedRefund[productId] =
+          (groupedRefund[productId] || 0) + refundQuantity;
+
+        totalRefundQty += refundQuantity;
+      }
+
+      remainingTotalQty += remainingQuantity;
+      newOrderTotal += newSubtotal;
+
+      detailUpdates.push({
+        rowNumber: i + 1,
+        remainingQuantity: remainingQuantity,
+        newSubtotal: newSubtotal
+      });
+    }
+
+    if (!found) {
+      throw new Error('Detail produk transaksi tidak ditemukan.');
+    }
+
+    if (totalRefundQty <= 0) {
+      throw new Error('Tidak ada jumlah produk yang di-refund.');
+    }
+
+    // Kembalikan stok hanya sesuai jumlah yang di-refund.
+    const productData = getProductRowMap();
+
+    Object.keys(groupedRefund).forEach(function(productId) {
+
+      const product = productData.products[productId];
+
+      if (!product) {
+        throw new Error(
+          'Produk "' + productId + '" tidak ditemukan di Input_Produk.'
+        );
+      }
+
+      // Hanya tambahkan jumlah refund produk ini, jangan pernah mengembalikan seluruh jumlah pembelian.
+      const jumlahYangDikembalikan = Number(groupedRefund[productId]) || 0;
+      const newStock = product.stock + jumlahYangDikembalikan;
+
+      productData.sheet
+        .getRange(product.rowNumber, productData.stockIndex + 1)
+        .setValue(newStock);
+    });
+
+    // Perbarui jumlah produk yang masih tetap dibeli.
+    detailUpdates.forEach(function(update) {
+
+      detailSheet
+        .getRange(update.rowNumber, detailQuantityIndex + 1)
+        .setValue(update.remainingQuantity);
+
+      if (detailSubtotalIndex > -1) {
+        detailSheet
+          .getRange(update.rowNumber, detailSubtotalIndex + 1)
+          .setValue(update.newSubtotal);
+      }
+    });
+
+    // Perbarui total transaksi setelah refund.
+    if (totalPurchaseIndex > -1) {
+      orderSheet
+        .getRange(orderRowNumber, totalPurchaseIndex + 1)
+        .setValue(newOrderTotal);
+    }
+
+    const fullRefund = remainingTotalQty === 0;
+
+    if (statusTransactionIndex > -1) {
+      orderSheet
+        .getRange(orderRowNumber, statusTransactionIndex + 1)
+        .setValue(fullRefund ? 'REFUND' : 'SEBAGIAN REFUND');
+    }
+
+    if (statusRefundIndex > -1) {
+      orderSheet
+        .getRange(orderRowNumber, statusRefundIndex + 1)
+        .setValue(fullRefund ? 'YA' : 'SEBAGIAN');
+    }
+
+    if (refundDateIndex > -1) {
+      orderSheet
+        .getRange(orderRowNumber, refundDateIndex + 1)
+        .setValue(new Date());
+    }
+
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      message: fullRefund
+        ? 'Refund penuh berhasil. Semua stok telah dikembalikan.'
+        : 'Refund sebagian berhasil. Stok dikembalikan sesuai jumlah refund.',
+      ID_PEMESANAN: transactionId,
+      totalRefundQty: totalRefundQty,
+      stokDikembalikan: groupedRefund,
+      totalSetelahRefund: newOrderTotal,
+      statusRefund: fullRefund ? 'YA' : 'SEBAGIAN'
+    };
+
+  } finally {
+
+    lock.releaseLock();
+
+  }
+}
+
+
+
