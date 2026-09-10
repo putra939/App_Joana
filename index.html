@@ -1329,6 +1329,49 @@
   z-index:1070;
 }
 
+/* ==================================================
+   CHECKOUT - POPUP HUBUNGKAN PRINTER BLUETOOTH
+   Selalu berada di atas seluruh popup checkout lainnya.
+   ================================================== */
+#bluetoothCheckoutModal{
+  z-index:12000 !important;
+}
+#bluetoothCheckoutModal + .modal-backdrop{
+  z-index:11990 !important;
+}
+#bluetoothCheckoutModal .modal-dialog{
+  max-width:520px;
+}
+#bluetoothCheckoutModal .bluetooth-checkout-card{
+  border:0;
+  border-radius:20px;
+  overflow:hidden;
+  box-shadow:0 24px 70px rgba(15,23,42,.35);
+}
+.bluetooth-checkout-icon{
+  width:62px;
+  height:62px;
+  border-radius:18px;
+  display:grid;
+  place-items:center;
+  margin:0 auto 16px;
+  background:rgba(59,130,246,.10);
+  color:var(--accent-600);
+  font-size:30px;
+}
+#bluetoothCheckoutStatus{
+  background:var(--bg-soft);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:13px 15px;
+  color:var(--slate-700);
+  font-size:13px;
+  line-height:1.55;
+}
+#bluetoothCheckoutModal .btn{
+  min-height:46px;
+}
+
 @media (max-width:576px){
   #salesCartModal .modal-dialog{
     width:calc(100% - 20px);
@@ -2816,6 +2859,34 @@
           <input type="text" class="form-control" id="manualBarcodeInput" placeholder="Input manual kode...">
           <button class="btn btn-primary" onclick="submitManualBarcode()">Gunakan</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CHECKOUT BLUETOOTH MODAL -->
+<div class="modal fade" id="bluetoothCheckoutModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content bluetooth-checkout-card">
+      <div class="scan-modal-header">
+        <div>
+          <div class="panel-eyebrow">Printer Resi</div>
+          <h4 class="modal-title">Hubungkan Bluetooth</h4>
+        </div>
+      </div>
+      <div class="modal-body p-4 text-center">
+        <div class="bluetooth-checkout-icon"><i class="bi bi-bluetooth"></i></div>
+        <h5 class="mb-2" style="font-family:'Playfair Display',serif;font-weight:700;color:var(--slate-900);">Printer harus terhubung</h5>
+        <p class="mb-3" style="font-size:13px;color:var(--ink-mute);">Sebelum memilih metode pembayaran, hubungkan printer Bluetooth agar resi dapat dicetak otomatis setelah transaksi selesai.</p>
+        <div id="bluetoothCheckoutStatus">Memeriksa status printer...</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="bluetoothCheckoutCancelBtn" onclick="cancelBluetoothCheckout()">
+          <i class="bi bi-x-circle me-2"></i>Batalkan
+        </button>
+        <button type="button" class="btn btn-accent" id="bluetoothCheckoutConnectBtn" onclick="checkoutConnectBluetoothPrinter()">
+          <i class="bi bi-bluetooth me-2"></i><span>Hubungkan Bluetooth</span>
+        </button>
       </div>
     </div>
   </div>
@@ -5345,20 +5416,165 @@ function submitOrder() {
   const total = Math.max(0, subtotal - discount - priceCut);
   document.getElementById('paymentTotal').textContent = formatRupiah(total);
 
-  const showPaymentPopup = () => {
-    selectPayment(document.querySelector('.payment-method-card.active'), 'Tunai');
-    new bootstrap.Modal(document.getElementById('paymentModal')).show();
-  };
+  const continueCheckout = () => startCheckoutPaymentFlow();
 
-  // Tutup popup Keranjang terlebih dahulu agar tidak bertumpuk dengan popup Pembayaran.
+  // Tutup popup Keranjang terlebih dahulu. Setelah itu sistem memeriksa
+  // koneksi printer Bluetooth sebelum popup pilihan metode pembayaran dibuka.
   const cartModalEl = document.getElementById('salesCartModal');
   const cartIsOpen = cartModalEl && cartModalEl.classList.contains('show');
 
   if (cartIsOpen && salesCartModalInstance) {
-    cartModalEl.addEventListener('hidden.bs.modal', showPaymentPopup, { once:true });
+    cartModalEl.addEventListener('hidden.bs.modal', continueCheckout, { once:true });
     salesCartModalInstance.hide();
   } else {
-    showPaymentPopup();
+    continueCheckout();
+  }
+}
+
+// =====================================================
+// CHECKOUT GUARD - PRINTER BLUETOOTH WAJIB TERHUBUNG
+// Alur: Keranjang -> Cek Bluetooth -> Hubungkan bila perlu -> Pembayaran
+// =====================================================
+let bluetoothCheckoutModalInstance = null;
+let checkoutBluetoothConnecting = false;
+
+function showPaymentPopupAfterBluetooth(){
+  const activeCard = document.querySelector('.payment-method-card.active') || document.querySelector('.payment-method-card');
+  if(activeCard) selectPayment(activeCard, 'Tunai');
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('paymentModal')).show();
+}
+
+function getCheckoutSavedPrinterName(){
+  try{
+    if(window.NativePrinterManager?.isNative?.()){
+      const saved=window.NativePrinterManager.getSaved?.();
+      return saved?.name || saved?.deviceName || '';
+    }
+  }catch(e){}
+  try{
+    const pref=typeof getBluetoothPrinterPreference==='function' ? getBluetoothPrinterPreference() : null;
+    return pref?.name || '';
+  }catch(e){ return ''; }
+}
+
+async function isCheckoutPrinterConnected(){
+  // Native app memiliki status koneksi yang lebih akurat.
+  try{
+    if(window.NativePrinterManager?.isNative?.()){
+      const state=await window.NativePrinterManager.getStatus();
+      if(state?.connected) return true;
+      if(window.NativePrinterManager.getSaved?.()){
+        const ok=await window.reconnectSavedBluetoothPrinter(false);
+        if(ok) return true;
+      }
+      return false;
+    }
+  }catch(e){
+    console.warn('Pemeriksaan printer native gagal:',e);
+  }
+
+  // Web Bluetooth: gunakan koneksi aktif terlebih dahulu, lalu reconnect printer tersimpan.
+  try{
+    if(typeof bluetoothPrinterDevice!=='undefined' && bluetoothPrinterDevice?.gatt?.connected && typeof bluetoothPrinterCharacteristic!=='undefined' && bluetoothPrinterCharacteristic) return true;
+  }catch(e){}
+
+  try{
+    if(typeof reconnectSavedBluetoothPrinter==='function'){
+      const ok=await reconnectSavedBluetoothPrinter(false);
+      if(ok) return true;
+    }
+  }catch(e){
+    console.warn('Reconnect Bluetooth checkout gagal:',e);
+  }
+
+  return !!(typeof bluetoothPrinterDevice!=='undefined' && bluetoothPrinterDevice?.gatt?.connected && typeof bluetoothPrinterCharacteristic!=='undefined' && bluetoothPrinterCharacteristic);
+}
+
+function updateBluetoothCheckoutUi(message, busy=false){
+  const status=document.getElementById('bluetoothCheckoutStatus');
+  const btn=document.getElementById('bluetoothCheckoutConnectBtn');
+  if(status) status.textContent=message;
+  if(btn){
+    btn.disabled=busy;
+    btn.innerHTML=busy
+      ? '<span class="spinner-border spinner-border-sm me-2"></span>Menghubungkan...'
+      : '<i class="bi bi-bluetooth me-2"></i><span>Hubungkan Bluetooth</span>';
+  }
+}
+
+function showBluetoothCheckoutModal(message){
+  const name=getCheckoutSavedPrinterName();
+  updateBluetoothCheckoutUi(message || (name
+    ? `Printer tersimpan: ${name}. Hubungkan printer tersebut untuk melanjutkan checkout.`
+    : 'Belum ada printer aktif. Pilih dan hubungkan printer Bluetooth untuk melanjutkan checkout.'
+  ));
+
+  const el=document.getElementById('bluetoothCheckoutModal');
+  bluetoothCheckoutModalInstance=bootstrap.Modal.getOrCreateInstance(el,{backdrop:'static',keyboard:false,focus:true});
+  bluetoothCheckoutModalInstance.show();
+}
+
+function cancelBluetoothCheckout(){
+  if(bluetoothCheckoutModalInstance) bluetoothCheckoutModalInstance.hide();
+}
+
+async function startCheckoutPaymentFlow(){
+  // Payment modal TIDAK dibuka sebelum status printer dipastikan.
+  try{
+    const connected=await isCheckoutPrinterConnected();
+    if(connected){
+      showPaymentPopupAfterBluetooth();
+      return;
+    }
+  }catch(e){
+    console.warn('Status Bluetooth checkout gagal:',e);
+  }
+
+  showBluetoothCheckoutModal();
+}
+
+async function checkoutConnectBluetoothPrinter(){
+  if(checkoutBluetoothConnecting) return;
+  checkoutBluetoothConnecting=true;
+  updateBluetoothCheckoutUi('Sedang menghubungkan printer Bluetooth...',true);
+
+  try{
+    let ok=false;
+    const savedName=getCheckoutSavedPrinterName();
+
+    if(window.NativePrinterManager?.isNative?.()){
+      // Native app dapat mencoba printer tersimpan tanpa memilih ulang.
+      ok=await window.reconnectSavedBluetoothPrinter(false);
+      if(!ok) ok=await window.connectBluetoothPrinter({quick:!!savedName});
+    }else{
+      // Browser: coba reconnect perangkat tersimpan, jika belum tersedia buka pemilih Bluetooth.
+      if(savedName && typeof quickReconnectBluetoothPrinter==='function'){
+        ok=await quickReconnectBluetoothPrinter();
+      }else if(typeof connectBluetoothPrinter==='function'){
+        ok=await connectBluetoothPrinter();
+      }
+    }
+
+    if(!ok){
+      updateBluetoothCheckoutUi('Printer belum terhubung. Silakan pilih atau hidupkan printer Bluetooth lalu coba kembali.');
+      return;
+    }
+
+    const name=getCheckoutSavedPrinterName() || 'Bluetooth Printer';
+    updateBluetoothCheckoutUi(`Printer ${name} berhasil terhubung. Membuka pembayaran...`,true);
+
+    setTimeout(()=>{
+      const el=document.getElementById('bluetoothCheckoutModal');
+      el.addEventListener('hidden.bs.modal',()=>showPaymentPopupAfterBluetooth(),{once:true});
+      if(bluetoothCheckoutModalInstance) bluetoothCheckoutModalInstance.hide();
+    },250);
+  }catch(err){
+    console.warn('Koneksi Bluetooth checkout gagal:',err);
+    updateBluetoothCheckoutUi(err?.message || 'Gagal menghubungkan printer. Silakan coba kembali.');
+  }finally{
+    checkoutBluetoothConnecting=false;
+    const btn=document.getElementById('bluetoothCheckoutConnectBtn');
+    if(btn && !btn.disabled) updateBluetoothCheckoutUi(document.getElementById('bluetoothCheckoutStatus')?.textContent || 'Printer belum terhubung.');
   }
 }
 
@@ -7430,7 +7646,7 @@ document.addEventListener('DOMContentLoaded', function () {
 (function () {
   'use strict';
 
-  // Blokir refresh keyboard pada desktop: F5 dan Ctrl/Cmd + R
+  // Blokir refresh keyboard secara diam-diam (tanpa notifikasi): F5 dan Ctrl/Cmd + R
   document.addEventListener('keydown', function (e) {
     const key = (e.key || '').toLowerCase();
     const isRefresh = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && key === 'r');
