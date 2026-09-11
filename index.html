@@ -4840,7 +4840,24 @@ function viewQR(base64Data, sku) {
   new bootstrap.Modal(document.getElementById('qrModal')).show();
 }
 
-async function fetchProductsFromGAS() {
+// ==================================================
+// OPTIMASI KONEKSI DATABASE: cegah request ganda
+// ==================================================
+let productsFetchPromise = null;
+let lastProductsFetchAt = 0;
+const PRODUCTS_CACHE_TTL = 2500;
+
+async function fetchProductsFromGAS(forceRefresh = false) {
+  if (productsFetchPromise && !forceRefresh) return productsFetchPromise;
+  if (!forceRefresh && products.length && (Date.now() - lastProductsFetchAt < PRODUCTS_CACHE_TTL)) return products;
+
+  productsFetchPromise = fetchProductsFromGASDirect()
+    .then(result => { lastProductsFetchAt = Date.now(); return result; })
+    .finally(() => { productsFetchPromise = null; });
+  return productsFetchPromise;
+}
+
+async function fetchProductsFromGASDirect() {
   const tableBody = document.getElementById('gasProductsTableBody');
   
   if (GAS_URL === 'MASUKKAN_URL_WEB_APP_APPS_SCRIPT_DISINI') {
@@ -4855,7 +4872,14 @@ async function fetchProductsFromGAS() {
   }
 
   try {
-    const res = await fetch(`${GAS_URL}?action=read`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const separator = GAS_URL.includes('?') ? '&' : '?';
+    const res = await fetch(`${GAS_URL}${separator}action=read&ts=${Date.now()}`, {
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
     const json = await res.json();
     if (json.success) {
       gasProducts = sortNewestProductsFirst(json.data);
@@ -5894,7 +5918,7 @@ async function postGAS(payload) {
   // no-cors tetap digunakan agar Web App Apps Script dapat menerima data lintas domain.
   // Timeout mencegah tombol pembayaran terasa macet terlalu lama saat jaringan bermasalah.
   const controller = new AbortController();
-  const timeout = setTimeout(()=>controller.abort(), 10000);
+  const timeout = setTimeout(()=>controller.abort(), 7000);
 
   try{
     await fetch(GAS_URL, {
@@ -6116,9 +6140,19 @@ async function processPayment() {
       };
     });
 
-    // Refresh aplikasi penuh setelah pembayaran berhasil agar seluruh data
-    // (stok, produk, dashboard, dan history transaksi) dimuat ulang dari awal.
-    autoRefreshApplication(1500, 'penjualan');
+    // OPTIMASI: jangan reload seluruh aplikasi setelah pembayaran.
+    // Tampilan diperbarui langsung, database disinkronkan di background.
+    receiptData.items.forEach(item => {
+      const product = products.find(p => String(p.name) === String(item.name));
+      if (product) product.stock = Math.max(0, Number(product.stock || 0) - Number(item.qty || 0));
+    });
+    if (typeof renderOrderProducts === 'function') renderOrderProducts();
+
+    setTimeout(() => {
+      autoRefreshAfterPayment(soldItemsForRefresh).catch(err =>
+        console.warn('Sinkronisasi database background gagal:', err)
+      );
+    }, 250);
 
   } catch (error) {
     console.error('Gagal menyimpan transaksi:', error);
