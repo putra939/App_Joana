@@ -1,0 +1,4 @@
+1. chrome://flags/#enable-web-bluetooth-new-permissions-backend
+2. pilih enable & Relaunch
+3. Settings > Privacy & Security > Site Settings
+4. Additional Permissions > Bluetooth > allow
