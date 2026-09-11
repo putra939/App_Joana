@@ -3149,12 +3149,13 @@
               </div>
               <div class="receipt-printer-actions">
                 <button type="button" class="btn btn-primary btn-sm" id="bluetoothQuickReconnectBtn" onclick="quickReconnectBluetoothPrinter()"><i class="bi bi-lightning-charge me-1"></i><span>Hubungkan Cepat</span></button>
-                <button type="button" class="btn btn-outline-primary btn-sm" onclick="connectBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i><span>Hubungkan / Ganti</span></button>
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="connectBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i><span>BLE / Ganti</span></button>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="classicSerialConnectBtn" onclick="connectClassicBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i><span>Bluetooth Classic</span></button>
                 <button type="button" class="btn btn-outline-danger btn-sm" onclick="forgetBluetoothPrinter()"><i class="bi bi-x-circle me-1"></i><span>Lupakan</span></button>
                 <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testReceiptPrint()"><i class="bi bi-printer me-1"></i><span>Test Print</span></button>
               </div>
             </div>
-            <div class="small text-muted mt-2">Cetak langsung dari browser hanya mendukung printer Bluetooth Low Energy (BLE/GATT) dengan karakteristik yang dapat ditulis dan kompatibel ESC/POS. Printer Bluetooth Classic/SPP tidak dapat dicetak langsung oleh HTML/browser; gunakan printer BLE atau aplikasi/bridge printer.</div>
+            <div class="small text-muted mt-2">Untuk printer BLE gunakan tombol <b>BLE / Ganti</b>. Untuk RPP02N Bluetooth Classic/SPP di Windows, gunakan <b>Bluetooth Classic</b>. Aplikasi akan memakai Web Serial untuk COM Port yang sudah diberi izin, lalu mencoba membuka kembali port tersebut otomatis setelah refresh.</div>
           </div>
         </form>
       </div>
@@ -8092,5 +8093,210 @@ document.addEventListener('DOMContentLoaded', function () {
 })();
 </script>
 
+
+<!-- =====================================================
+     RPP02N BLUETOOTH CLASSIC / WEB SERIAL AUTOCONNECT
+     ===================================================== -->
+<script>
+(function(){
+  'use strict';
+
+  const CLASSIC_PREF_KEY='receiptClassicSerialPrinterV1';
+  let classicPrinterPort=null;
+  let classicReconnectTimer=null;
+  let classicReconnectInProgress=false;
+  let classicAutoAttempts=0;
+  const CLASSIC_BAUD_RATE=9600;
+
+  function classicSupported(){ return !!navigator.serial; }
+  function getClassicPref(){
+    try{return JSON.parse(localStorage.getItem(CLASSIC_PREF_KEY)||'null');}
+    catch(e){return null;}
+  }
+  function saveClassicPref(data){
+    const pref={
+      transport:'bluetooth-classic-serial',
+      name:data?.name||'RPP02N',
+      baudRate:Number(data?.baudRate||CLASSIC_BAUD_RATE),
+      autoConnect:true,
+      savedAt:Date.now(),
+      ...data
+    };
+    localStorage.setItem(CLASSIC_PREF_KEY,JSON.stringify(pref));
+    // Hentikan AutoConnect BLE lama agar tidak terus menghasilkan NetworkError.
+    localStorage.removeItem('receiptBluetoothPrinterV1');
+    return pref;
+  }
+  function classicStatus(message){
+    const status=document.getElementById('bluetoothPrinterStatus');
+    const saved=document.getElementById('bluetoothPrinterSavedName');
+    const pref=getClassicPref();
+    if(saved){
+      saved.textContent=pref ? `Printer Classic tersimpan: ${pref.name||'RPP02N'}` : 'Belum ada printer yang tersimpan.';
+    }
+    if(status && message) status.textContent=message;
+  }
+  function classicConnected(){ return !!classicPrinterPort?.writable; }
+
+  async function openClassicPort(port,pref={}){
+    if(!port) throw new Error('COM Port printer tidak ditemukan.');
+    if(!port.readable && !port.writable){
+      await port.open({baudRate:Number(pref.baudRate||CLASSIC_BAUD_RATE),dataBits:8,stopBits:1,parity:'none',flowControl:'none'});
+    }
+    classicPrinterPort=port;
+    try{
+      port.addEventListener('disconnect',()=>{
+        classicStatus('🟠 Printer Classic terputus. Menunggu dan mencoba reconnect otomatis...');
+        scheduleClassicReconnect(2000);
+      },{once:true});
+    }catch(e){}
+    return true;
+  }
+
+  async function connectClassicBluetoothPrinter(){
+    if(!classicSupported()){
+      showToast('Tidak Didukung','Browser ini tidak menyediakan Web Serial. Gunakan Chrome/Edge versi terbaru di Windows dan pastikan printer Classic membuat COM Port.','red');
+      return false;
+    }
+    try{
+      classicStatus('Pilih COM Port Bluetooth Classic RPP02N...');
+      // requestPort wajib berasal dari klik pengguna. Setelah dipilih sekali,
+      // getPorts() dapat dipakai untuk AutoConnect pada refresh berikutnya.
+      const port=await navigator.serial.requestPort();
+      await openClassicPort(port,{baudRate:CLASSIC_BAUD_RATE});
+      saveClassicPref({name:'RPP02N',baudRate:CLASSIC_BAUD_RATE});
+      classicAutoAttempts=0;
+      classicStatus('🟢 Terhubung: RPP02N (Bluetooth Classic / Serial)');
+      showToast('Printer Terhubung','RPP02N berhasil disimpan. Setelah refresh aplikasi akan mencoba AutoConnect ke COM Port yang sudah diizinkan.','success');
+      return true;
+    }catch(err){
+      console.warn('Classic Bluetooth connect gagal:',err);
+      classicStatus('Printer Classic belum terhubung.');
+      if(err?.name==='NotFoundError') showToast('Bluetooth Classic','Pemilihan COM Port dibatalkan.','red');
+      else showToast('Bluetooth Classic',err?.message||'Gagal membuka COM Port printer.','red');
+      return false;
+    }
+  }
+
+  async function reconnectClassicPrinter(showMessage=false){
+    const pref=getClassicPref();
+    if(!pref?.autoConnect || !classicSupported()) return false;
+    if(classicConnected()) return true;
+    if(classicReconnectInProgress) return false;
+    classicReconnectInProgress=true;
+    try{
+      classicStatus(`Menghubungkan otomatis Bluetooth Classic: ${pref.name||'RPP02N'}...`);
+      const ports=await navigator.serial.getPorts();
+      if(!ports.length){
+        classicStatus(`🟡 ${pref.name||'RPP02N'} tersimpan, tetapi izin COM Port belum tersedia. Hubungkan sekali melalui tombol Bluetooth Classic.`);
+        return false;
+      }
+      // Browser tidak selalu memberikan nama COM Port. Port yang pernah dipilih
+      // biasanya muncul kembali sebagai port pertama/yang sama dalam daftar izin.
+      const port=ports[0];
+      await openClassicPort(port,pref);
+      classicAutoAttempts=0;
+      classicStatus(`🟢 Terhubung otomatis: ${pref.name||'RPP02N'} (Bluetooth Classic)`);
+      if(showMessage) showToast('Printer Terhubung',`${pref.name||'RPP02N'} berhasil dihubungkan otomatis.`,'success');
+      return true;
+    }catch(err){
+      const msg=err?.message||err?.name||'Printer belum tersedia';
+      console.warn('Classic AutoConnect gagal:',msg);
+      classicStatus(`🟡 ${pref.name||'RPP02N'} belum tersedia. AutoConnect akan mencoba lagi...`);
+      return false;
+    }finally{
+      classicReconnectInProgress=false;
+    }
+  }
+
+  function scheduleClassicReconnect(delay=2000){
+    const pref=getClassicPref();
+    if(!pref?.autoConnect || !classicSupported()) return;
+    if(classicReconnectTimer) clearTimeout(classicReconnectTimer);
+    classicReconnectTimer=setTimeout(async()=>{
+      if(classicConnected()) return;
+      classicAutoAttempts++;
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok && classicAutoAttempts<120){
+        scheduleClassicReconnect(Math.min(2000+classicAutoAttempts*500,10000));
+      }
+    },delay);
+  }
+
+  async function writeClassic(data){
+    if(!classicConnected()){
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok || !classicConnected()) throw new Error('Printer Bluetooth Classic belum terhubung.');
+    }
+    const writer=classicPrinterPort.writable.getWriter();
+    try{
+      await writer.write(data instanceof Uint8Array ? data : new TextEncoder().encode(String(data)));
+    }finally{ writer.releaseLock(); }
+    return true;
+  }
+
+  // Simpan implementasi sebelumnya, lalu buat mode Classic sebagai prioritas
+  // bila RPP02N Classic sudah dipilih dan disimpan.
+  const oldQuick=window.quickReconnectBluetoothPrinter;
+  const oldReconnect=window.reconnectSavedBluetoothPrinter;
+  const oldForget=window.forgetBluetoothPrinter;
+  const oldSend=window.sendReceiptBluetooth;
+
+  window.quickReconnectBluetoothPrinter=async function(){
+    if(getClassicPref()) return reconnectClassicPrinter(true);
+    return typeof oldQuick==='function' ? oldQuick() : false;
+  };
+
+  window.reconnectSavedBluetoothPrinter=async function(showMessage=false){
+    if(getClassicPref()) return reconnectClassicPrinter(showMessage);
+    return typeof oldReconnect==='function' ? oldReconnect(showMessage) : false;
+  };
+
+  window.forgetBluetoothPrinter=async function(){
+    if(classicReconnectTimer) clearTimeout(classicReconnectTimer);
+    classicReconnectTimer=null;
+    try{ if(classicPrinterPort?.readable || classicPrinterPort?.writable) await classicPrinterPort.close(); }catch(e){}
+    classicPrinterPort=null;
+    localStorage.removeItem(CLASSIC_PREF_KEY);
+    if(typeof oldForget==='function'){
+      try{ oldForget(); }catch(e){}
+    }
+    classicStatus('Printer dilupakan. Anda dapat menghubungkan printer kembali.');
+    showToast('Printer','Preferensi printer Bluetooth Classic telah dihapus.','success');
+  };
+
+  window.sendReceiptBluetooth=async function(receipt){
+    if(getClassicPref()){
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok && !classicConnected()) return false;
+      const encoder=new TextEncoder();
+      const init=new Uint8Array([0x1b,0x40,0x1b,0x61,0x00]);
+      await writeClassic(init);
+      const bytes=encoder.encode(buildEscPosText(receipt));
+      // Classic Serial dapat menerima data lebih besar, tetapi tetap dikirim
+      // bertahap agar stabil pada driver COM Bluetooth.
+      for(let i=0;i<bytes.length;i+=512){ await writeClassic(bytes.slice(i,i+512)); }
+      await writeClassic(new Uint8Array([0x1b,0x64,0x03,0x1d,0x56,0x00]));
+      return true;
+    }
+    return typeof oldSend==='function' ? oldSend(receipt) : false;
+  };
+
+  window.connectClassicBluetoothPrinter=connectClassicBluetoothPrinter;
+
+  // Jalankan AutoConnect saat halaman selesai dimuat dan ketika aplikasi kembali aktif.
+  function bootClassicAutoConnect(){
+    if(getClassicPref()){
+      reconnectClassicPrinter(false).then(ok=>{ if(!ok) scheduleClassicReconnect(2500); });
+    }
+  }
+  window.addEventListener('load',()=>setTimeout(bootClassicAutoConnect,300));
+  window.addEventListener('focus',()=>{ if(getClassicPref() && !classicConnected()) reconnectClassicPrinter(false); });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible' && getClassicPref() && !classicConnected()) reconnectClassicPrinter(false);
+  });
+  classicStatus(getClassicPref() ? 'Memeriksa printer Bluetooth Classic tersimpan...' : null);
+})();
+</script>
 </body>
 </html>
