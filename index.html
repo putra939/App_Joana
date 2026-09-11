@@ -2204,9 +2204,9 @@
 
 
 
-  /* Cegah efek pull-to-refresh / overscroll pada Android dan tablet */
+  /* Scroll native untuk Web, PWA Desktop, Android dan Tablet */
   html, body {
-    overscroll-behavior-y: none;
+    overscroll-behavior-y: auto;
   }
 
 
@@ -2358,25 +2358,40 @@
 
 
 /* ==================================================
-   FIX FINAL - SCROLL APLIKASI SETELAH AUTO REFRESH
-   Memastikan halaman utama tidak terkunci oleh modal/backdrop.
+   SCROLL UNIVERSAL: WEB + PWA DESKTOP + ANDROID + TABLET
+   Jangan mengunci tinggi viewport atau memaksa overflow.
    ================================================== */
-html, body{
-  height:auto !important;
-  min-height:100% !important;
-  overflow-x:hidden !important;
-  overflow-y:auto !important;
-  overscroll-behavior-y:auto !important;
+html {
+  width:100%;
+  min-height:100%;
+  height:auto;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior-y:auto;
+}
+body {
+  width:100%;
+  min-height:100vh;
+  min-height:100dvh;
+  height:auto;
+  margin:0;
+  overflow-x:hidden;
+  overflow-y:auto;
+  position:static;
+  touch-action:pan-x pan-y pinch-zoom;
   -webkit-overflow-scrolling:touch;
 }
-body.modal-open{
-  overflow-y:auto !important;
-  padding-right:0 !important;
-}
-.app-shell, .main, .page-content{
+.app-shell {
   min-height:100vh;
+  min-height:100dvh;
+  height:auto;
+  overflow:visible;
 }
-
+.main, .page-content {
+  min-height:0;
+  height:auto;
+  max-height:none;
+}
 </style>
 </head>
 <body>
@@ -7726,12 +7741,16 @@ smartBluetoothRefreshUi(smartBluetoothDescribeSavedState());
 
 
 <script>
-  // Registrasi service worker sederhana agar aplikasi siap digunakan sebagai shortcut/PWA.
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=3').catch(() => {});
+  // PWA CACHE CLEANUP: hapus Service Worker lama yang dapat menyajikan HTML/CSS versi cache.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', async () => {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      } catch(e) { console.warn('PWA cleanup:', e); }
     });
   }
+
 
 // =====================================================
 // PERBAIKAN NAVIGASI HISTORY TRANSAKSI
@@ -7751,69 +7770,43 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 // =====================================================
-// AUTO REFRESH + PERBAIKAN SCROLL SETELAH PENYIMPANAN
+// AUTO REFRESH + SCROLL UNIVERSAL
 // =====================================================
 let appRefreshTimer = null;
 
-// Menghapus sisa scroll-lock Bootstrap/backdrop sebelum dan sesudah refresh.
-// Ini mencegah aplikasi terkunci dan tidak bisa di-scroll di Desktop, HP,
-// maupun Tablet setelah proses simpan melakukan reload halaman.
-function restoreApplicationScroll() {
+// Bersihkan hanya scroll-lock Bootstrap yang benar-benar tersisa.
+// Tidak memaksa overflow pada setiap focus/load karena itu dapat
+// mengganggu gesture native pada browser dan aplikasi terinstal.
+function clearBootstrapScrollLock() {
   try {
-    // Tutup semua modal yang mungkin masih menyisakan scroll-lock.
-    document.querySelectorAll('.modal.show').forEach(modal => {
-      modal.classList.remove('show');
-      modal.style.display = 'none';
-      modal.setAttribute('aria-hidden', 'true');
-    });
-
+    if (document.querySelector('.modal.show')) return;
     document.body.classList.remove('modal-open');
-    document.body.style.setProperty('overflow', 'auto', 'important');
-    document.body.style.setProperty('overflow-y', 'auto', 'important');
-    document.body.style.setProperty('overflow-x', 'hidden', 'important');
-    document.body.style.setProperty('padding-right', '0px', 'important');
-
-    document.documentElement.style.setProperty('overflow', 'auto', 'important');
-    document.documentElement.style.setProperty('overflow-y', 'auto', 'important');
-    document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');
-
-    document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
-
-    // Bersihkan elemen backdrop tambahan jika ada proses Bootstrap yang belum selesai.
-    document.querySelectorAll('[data-bs-backdrop]').forEach(() => {});
-  } catch (error) {
-    console.warn('Scroll restore:', error);
-  }
+    document.body.style.removeProperty('padding-right');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('position');
+    document.body.style.removeProperty('top');
+    document.body.style.removeProperty('height');
+    document.documentElement.style.removeProperty('overflow');
+    document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+  } catch (error) { console.warn('Scroll cleanup:', error); }
 }
 
 function autoRefreshApplication(delay = 1200, targetPage = null) {
-  if (targetPage) {
-    sessionStorage.setItem('appRefreshTargetPage', targetPage);
-  }
-
-  // Hindari beberapa tombol/proses sukses membuat refresh ganda.
+  if (targetPage) sessionStorage.setItem('appRefreshTargetPage', targetPage);
   if (appRefreshTimer) clearTimeout(appRefreshTimer);
 
   appRefreshTimer = setTimeout(() => {
-    // Bersihkan status modal/scroll-lock terlebih dahulu sebelum reload.
-    restoreApplicationScroll();
+    clearBootstrapScrollLock();
+    // reload biasa lebih aman untuk Web dan PWA daripada memaksa URL baru
     window.location.reload();
   }, delay);
 }
 
-// Jalankan juga ketika browser memulihkan halaman dari cache (HP/Tablet).
-// Jalankan beberapa kali karena pada HP/Tablet Bootstrap/browser kadang
-// menerapkan kembali scroll-lock sesaat setelah event load/pageshow.
-function forceScrollRecovery() {
-  restoreApplicationScroll();
-  setTimeout(restoreApplicationScroll, 50);
-  setTimeout(restoreApplicationScroll, 250);
-  setTimeout(restoreApplicationScroll, 700);
-}
-document.addEventListener('DOMContentLoaded', forceScrollRecovery);
-window.addEventListener('load', forceScrollRecovery);
-window.addEventListener('pageshow', forceScrollRecovery);
-window.addEventListener('focus', restoreApplicationScroll);
+// Jalankan sekali setelah halaman selesai dimuat atau dipulihkan dari cache.
+document.addEventListener('DOMContentLoaded', () => setTimeout(clearBootstrapScrollLock, 0), { once:true });
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) setTimeout(clearBootstrapScrollLock, 0);
+});
 
 // Setelah halaman dimuat ulang, kembali ke menu yang sebelumnya ditentukan.
 document.addEventListener('DOMContentLoaded', function () {
