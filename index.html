@@ -2268,6 +2268,93 @@
   .history-page-btn{min-width:36px; height:36px;}
 }
 
+
+
+/* ==================================================
+   PENGATURAN PEMBAYARAN - RESPONSIVE AKSI PRINTER
+   Mencegah tombol Test Print keluar dari layar.
+   ================================================== */
+#receiptSettingsModal .modal-dialog{
+  max-width:680px;
+}
+
+#receiptSettingsModal .modal-content{
+  overflow:hidden;
+}
+
+#receiptSettingsModal .modal-body{
+  overflow-x:hidden;
+}
+
+#receiptSettingsModal .receipt-printer-actions{
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:8px;
+  width:100%;
+  margin-top:10px;
+}
+
+#receiptSettingsModal .receipt-printer-actions .btn{
+  min-width:0;
+  width:100%;
+  min-height:42px;
+  padding:8px 10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  line-height:1.25;
+}
+
+#receiptSettingsModal .receipt-printer-actions .btn i{
+  flex:0 0 auto;
+}
+
+#receiptSettingsModal .receipt-printer-actions .btn span{
+  min-width:0;
+  text-align:center;
+}
+
+/* Tablet dan layar sedang: tombol menjadi 2 kolom agar tidak terpotong */
+@media (max-width:767.98px){
+  #receiptSettingsModal .receipt-printer-actions{
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    gap:8px;
+  }
+}
+
+/* Smartphone: modal dan tombol tetap aman di dalam layar */
+@media (max-width:576px){
+  #receiptSettingsModal .modal-dialog{
+    width:calc(100% - 16px);
+    margin:8px auto;
+  }
+
+  #receiptSettingsModal .modal-body{
+    padding:16px;
+  }
+
+  #receiptSettingsModal .receipt-printer-actions{
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    gap:7px;
+  }
+
+  #receiptSettingsModal .receipt-printer-actions .btn{
+    min-height:58px;
+    padding:7px 6px;
+    font-size:12px;
+    flex-direction:column;
+    gap:3px;
+  }
+
+  #receiptSettingsModal .receipt-printer-actions .btn i{
+    margin:0 !important;
+    font-size:15px;
+  }
+}
+
 </style>
 </head>
 <body>
@@ -3060,14 +3147,15 @@
                 <div class="small text-muted" id="bluetoothPrinterStatus">Memeriksa printer tersimpan...</div>
                 <div class="small text-muted mt-1" id="bluetoothPrinterSavedName"></div>
               </div>
-              <div class="d-flex gap-2">
-                <button type="button" class="btn btn-primary btn-sm" id="bluetoothQuickReconnectBtn" onclick="quickReconnectBluetoothPrinter()"><i class="bi bi-lightning-charge me-1"></i>Hubungkan Cepat</button>
-                <button type="button" class="btn btn-outline-primary btn-sm" onclick="connectBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i>Hubungkan / Ganti</button>
-                <button type="button" class="btn btn-outline-danger btn-sm" onclick="forgetBluetoothPrinter()"><i class="bi bi-x-circle me-1"></i>Lupakan</button>
-                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testReceiptPrint()"><i class="bi bi-printer me-1"></i>Test Print</button>
+              <div class="receipt-printer-actions">
+                <button type="button" class="btn btn-primary btn-sm" id="bluetoothQuickReconnectBtn" onclick="quickReconnectBluetoothPrinter()"><i class="bi bi-lightning-charge me-1"></i><span>Hubungkan Cepat</span></button>
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="connectBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i><span>BLE / Ganti</span></button>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="classicSerialConnectBtn" onclick="connectClassicBluetoothPrinter()"><i class="bi bi-bluetooth me-1"></i><span>Bluetooth Classic</span></button>
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="forgetBluetoothPrinter()"><i class="bi bi-x-circle me-1"></i><span>Lupakan</span></button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testReceiptPrint()"><i class="bi bi-printer me-1"></i><span>Test Print</span></button>
               </div>
             </div>
-            <div class="small text-muted mt-2">Cetak langsung dari browser hanya mendukung printer Bluetooth Low Energy (BLE/GATT) dengan karakteristik yang dapat ditulis dan kompatibel ESC/POS. Printer Bluetooth Classic/SPP tidak dapat dicetak langsung oleh HTML/browser; gunakan printer BLE atau aplikasi/bridge printer.</div>
+            <div class="small text-muted mt-2">Untuk printer BLE gunakan tombol <b>BLE / Ganti</b>. Untuk RPP02N Bluetooth Classic/SPP di Windows, gunakan <b>Bluetooth Classic</b>. Aplikasi akan memakai Web Serial untuk COM Port yang sudah diberi izin, lalu mencoba membuka kembali port tersebut otomatis setelah refresh.</div>
           </div>
         </form>
       </div>
@@ -3281,7 +3369,12 @@ function cacheReceiptSettings(){
 async function loadReceiptSettings(forceRemote=false){
   const hasCache = hydrateReceiptSettingsFromCache();
 
-  if(!forceRemote && hasCache){
+  // Pengaturan yang baru disimpan secara lokal diprioritaskan.
+  // Ini mencegah data lama dari server menimpa perubahan terbaru.
+  const lastSavedAt = Number(localStorage.getItem('receiptSettingsLastSavedAt') || 0);
+  const savedRecently = lastSavedAt && (Date.now() - lastSavedAt < 24 * 60 * 60 * 1000);
+
+  if(hasCache && (!forceRemote || savedRecently)){
     return receiptSettings;
   }
 
@@ -3327,37 +3420,10 @@ async function openPaymentSettings(){
   new bootstrap.Modal(document.getElementById('receiptSettingsModal')).show();
 }
 
-
-// =====================================================
-// REFRESH APLIKASI SETELAH PROSES SIMPAN BERHASIL
-// =====================================================
-// Digunakan setelah pembayaran, simpan produk, simpan password,
-// dan simpan pengaturan. Refresh hanya dijalankan SETELAH proses
-// berhasil agar data yang belum tersimpan tidak hilang.
-let applicationRefreshScheduled = false;
-
-function refreshApplicationAfterSuccess(page='', delay=1200){
-  if(applicationRefreshScheduled) return;
-  applicationRefreshScheduled = true;
-
-  if(page){
-    try{
-      window.history.replaceState(null, '', '#' + page);
-    }catch(err){}
-  }
-
-  setTimeout(()=>{
-    try{
-      window.location.reload();
-    }catch(err){
-      window.location.href = window.location.href;
-    }
-  }, Math.max(300, Number(delay) || 1200));
-}
-
 async function saveReceiptSettings(){
   const saveButton = document.querySelector('#receiptSettingsModal .btn-accent[onclick*="saveReceiptSettings"]');
 
+  // Ambil semua nilai terlebih dahulu.
   receiptSettings = {
     ID_RESI:'RESI-UTAMA',
     JUDUL:document.getElementById('receiptTitle').value.trim(),
@@ -3367,54 +3433,76 @@ async function saveReceiptSettings(){
     FOOTER:document.getElementById('receiptFooter').value.trim()
   };
 
+  // VALIDASI DASAR
   if(!receiptSettings.JUDUL){
     showToast('Perhatian','Judul resi tidak boleh kosong.','red');
     document.getElementById('receiptTitle')?.focus();
     return;
   }
 
-  const oldButton = saveButton ? saveButton.innerHTML : '';
+  if(saveButton){
+    saveButton.disabled = true;
+    saveButton.dataset.originalHtml = saveButton.dataset.originalHtml || saveButton.innerHTML;
+    saveButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Menyimpan...';
+  }
 
   try{
-    if(saveButton){
-      saveButton.disabled=true;
-      saveButton.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Menyimpan...';
-    }
-
-    // Simpan lokal terlebih dahulu agar pengaturan tetap aman.
+    // =====================================================
+    // 1. SIMPAN LOKAL TERLEBIH DAHULU
+    // =====================================================
+    // Pengaturan langsung tersimpan di perangkat/browser sehingga
+    // tombol Simpan tidak gagal hanya karena Apps Script sedang lambat,
+    // offline, atau koneksi internet bermasalah.
     localStorage.setItem(
       'receiptAutoPrint',
-      document.getElementById('receiptAutoPrint').checked ? 'true':'false'
+      document.getElementById('receiptAutoPrint').checked ? 'true' : 'false'
     );
     cacheReceiptSettings();
+    localStorage.setItem('receiptSettingsLastSavedAt', String(Date.now()));
 
+    // Jika printer sedang terhubung, simpan preferensinya untuk reconnect.
     const printerSaved = bluetoothPrinterDevice && bluetoothPrinterDevice.gatt?.connected
       ? saveBluetoothPrinterPreference()
       : !!getBluetoothPrinterPreference();
 
-    // Kirim ke database. Jika URL belum dikonfigurasi, pengaturan lokal tetap berhasil.
-    if(GAS_URL && GAS_URL !== 'MASUKKAN_URL_WEB_APP_APPS_SCRIPT_DISINI'){
-      await postGAS({action:'saveReceiptSettings',data:receiptSettings});
-    }
-
+    // =====================================================
+    // 2. TAMPILKAN BERHASIL & TUTUP MODAL
+    // =====================================================
     showToast(
       'Berhasil',
       printerSaved
-        ? 'Pengaturan resi dan preferensi printer berhasil disimpan. Aplikasi akan diperbarui.'
-        : 'Pengaturan resi berhasil disimpan. Aplikasi akan diperbarui.',
+        ? 'Pengaturan resi dan preferensi printer Bluetooth berhasil disimpan.'
+        : 'Pengaturan resi berhasil disimpan.',
       'success'
     );
-
     closeModalSafely('receiptSettingsModal');
-    refreshApplicationAfterSuccess('pengaturan', 1200);
+
+    // Refresh aplikasi setelah pengaturan berhasil disimpan.
+    autoRefreshApplication(1200, 'pengaturan');
+
+    // =====================================================
+    // 3. SINKRONKAN KE GOOGLE APPS SCRIPT DI LATAR BELAKANG
+    // =====================================================
+    // Jangan membuat penyimpanan lokal gagal hanya karena request server
+    // bermasalah. Jika server tersedia, data tetap dikirim ke Spreadsheet.
+    if(GAS_URL && GAS_URL !== 'MASUKKAN_URL_WEB_APP_APPS_SCRIPT_DISINI'){
+      postGAS({action:'saveReceiptSettings', data:receiptSettings})
+        .then(()=>{
+          localStorage.removeItem('receiptSettingsSyncPending');
+        })
+        .catch((err)=>{
+          console.warn('Sinkronisasi pengaturan resi ke server tertunda:', err);
+          localStorage.setItem('receiptSettingsSyncPending', 'true');
+        });
+    }
 
   }catch(err){
     console.error('Gagal menyimpan pengaturan resi:', err);
-    showToast('Gagal','Pengaturan resi tidak dapat disimpan.','red');
+    showToast('Gagal','Terjadi kesalahan saat menyimpan pengaturan.','red');
   }finally{
     if(saveButton){
-      saveButton.disabled=false;
-      saveButton.innerHTML=oldButton || '<i class="bi bi-check-lg me-2"></i>Simpan Pengaturan';
+      saveButton.disabled = false;
+      saveButton.innerHTML = saveButton.dataset.originalHtml || '<i class="bi bi-check-lg me-2"></i>Simpan Pengaturan';
     }
   }
 }
@@ -4066,8 +4154,8 @@ async function submitChangePassword(event){
 
     // Respons UI langsung agar aplikasi terasa cepat.
     form.reset();
-    showToast('Berhasil','Password baru berhasil disimpan. Aplikasi akan diperbarui.','success');
-    refreshApplicationAfterSuccess('pengaturan', 1200);
+    showToast('Berhasil','Password baru berhasil dikirim dan disimpan ke database Login. Aplikasi akan diperbarui otomatis.','success');
+    autoRefreshApplication(1200, 'pengaturan');
 
   } catch(err) {
     console.error(err);
@@ -4613,18 +4701,12 @@ document.getElementById('productForm').addEventListener('submit', async (e) => {
     e.target.reset();
     resetQRForm();
     renderCategoryOptions();
-
+    
     await fetchProductsFromGAS();
 
-    showToast(
-      'Berhasil',
-      isEditing
-        ? 'Produk berhasil diperbarui. Aplikasi akan diperbarui.'
-        : 'Produk berhasil disimpan. Aplikasi akan diperbarui.',
-      'success'
-    );
-    refreshApplicationAfterSuccess('input-produk', 1200);
-
+    showToast('Berhasil', isEditing ? 'Produk berhasil diperbarui. Aplikasi akan diperbarui otomatis.' : 'Produk berhasil disimpan. Aplikasi akan diperbarui otomatis.', 'success');
+    autoRefreshApplication(1200, 'produk');
+    
   } catch (error) {
     console.error('CRUD Produk Error:', error);
     showToast('Error', error.message || 'Gagal memproses data produk.', 'red');
@@ -5997,10 +6079,9 @@ async function processPayment() {
       };
     });
 
-    // DATA PENJUALAN sudah berhasil disimpan dan proses cetak otomatis selesai.
-    // Refresh aplikasi dilakukan setelah pembayaran agar seluruh stok, histori,
-    // dashboard, dan data lain dimuat ulang dari kondisi terbaru.
-    refreshApplicationAfterSuccess('penjualan', autoPrint ? 1500 : 1000);
+    // Refresh aplikasi penuh setelah pembayaran berhasil agar seluruh data
+    // (stok, produk, dashboard, dan history transaksi) dimuat ulang dari awal.
+    autoRefreshApplication(1500, 'penjualan');
 
   } catch (error) {
     console.error('Gagal menyimpan transaksi:', error);
@@ -7260,6 +7341,10 @@ navigate(window.location.hash.replace('#', '') || 'dashboard');
 document.addEventListener('DOMContentLoaded', () => {
   updateBluetoothPrinterSavedUi();
 
+  // Diagnostik: tampilkan kemampuan auto-connect sebenarnya pada console.
+  console.info('[Bluetooth] Persistent auto-connect supported:',
+    !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function'));
+
   // Mulai reconnect segera setelah DOM siap. Tidak ada dialog Bluetooth yang
   // ditampilkan; hanya printer yang sebelumnya sudah diberi izin yang dicari.
   setTimeout(() => startSavedBluetoothPrinterAutoReconnect(), 150);
@@ -7303,6 +7388,88 @@ let smartBtLastState = '';
 
 function smartBluetoothCanPersistentReconnect(){
   return !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function');
+}
+
+// =====================================================
+// TRUE AUTO-CONNECT UNTUK PRINTER YANG SUDAH PERNAH DIBERI IZIN
+// =====================================================
+// Browser TIDAK mengizinkan requestDevice() dipanggil diam-diam karena itu
+// selalu membuka dialog pemilihan perangkat dan membutuhkan user gesture.
+// Namun, bila browser mendukung getDevices(), perangkat yang SUDAH PERNAH
+// diizinkan dapat dicari dan dihubungkan kembali tanpa menekan tombol.
+async function smartBluetoothGetAuthorizedPrinter(pref){
+  if(!smartBluetoothCanPersistentReconnect()) return null;
+
+  const devices=await navigator.bluetooth.getDevices();
+  if(!Array.isArray(devices) || !devices.length) return null;
+
+  // Cocokkan ID terlebih dahulu karena paling akurat.
+  let device=null;
+  if(pref?.id){
+    device=devices.find(d=>d.id===pref.id) || null;
+  }
+
+  // Fallback berdasarkan nama printer.
+  if(!device && pref?.name){
+    device=devices.find(d=>d.name===pref.name) || null;
+  }
+
+  // Jika hanya ada satu perangkat yang pernah diizinkan, gunakan perangkat itu.
+  if(!device && devices.length===1){
+    device=devices[0];
+  }
+
+  return device;
+}
+
+async function smartBluetoothAutoConnectNow(){
+  const pref=getBluetoothPrinterPreference();
+  if(!pref?.autoConnect) return false;
+
+  // Jika perangkat masih ada di memori halaman, langsung reconnect.
+  if(bluetoothPrinterDevice?.gatt){
+    return await smartBluetoothReconnectSession();
+  }
+
+  // Setelah F5/reload, ambil kembali perangkat yang SUDAH diizinkan browser.
+  if(!smartBluetoothCanPersistentReconnect()){
+    smartBluetoothRefreshUi(
+      `Printer tersimpan: ${pref.name || 'Bluetooth Printer'} — browser ini tidak menyediakan reconnect otomatis setelah F5.`
+    );
+    return false;
+  }
+
+  if(bluetoothPrinterReconnectInProgress) return false;
+  bluetoothPrinterReconnectInProgress=true;
+
+  try{
+    smartBluetoothRefreshUi(`Mencari printer tersimpan: ${pref.name || 'Bluetooth Printer'}...`);
+    const device=await smartBluetoothGetAuthorizedPrinter(pref);
+
+    if(!device){
+      smartBluetoothRefreshUi(
+        `Printer ${pref.name || 'Bluetooth Printer'} belum ditemukan. Pastikan Bluetooth printer menyala dan tetap dalam jangkauan.`
+      );
+      return false;
+    }
+
+    bluetoothPrinterDevice=device;
+    const ok=await connectBluetoothDevice(device,{silent:true});
+
+    if(ok){
+      saveBluetoothPrinterPreference();
+      smartBluetoothRefreshUi(`🟢 Terhubung otomatis: ${device.name || pref.name || 'Bluetooth Printer'}`);
+      return true;
+    }
+
+    return false;
+  }catch(err){
+    console.warn('Auto-connect Bluetooth gagal:',err);
+    smartBluetoothRefreshUi(`🟠 Auto-connect gagal. ${err?.message || 'Printer akan dicoba kembali.'}`);
+    return false;
+  }finally{
+    bluetoothPrinterReconnectInProgress=false;
+  }
 }
 
 function smartBluetoothConnectionState(){
@@ -7355,7 +7522,7 @@ function smartBluetoothDescribeSavedState(){
   if(smartBluetoothCanPersistentReconnect()){
     return `🟡 Printer tersimpan: ${pref.name || 'Bluetooth Printer'} — mencoba reconnect otomatis.`;
   }
-  return `🟡 Printer tersimpan: ${pref.name || 'Bluetooth Printer'} — klik Hubungkan Cepat setelah refresh.`;
+  return `🟡 Printer tersimpan: ${pref.name || 'Bluetooth Printer'} — browser memerlukan tindakan pengguna setelah refresh.`;
 }
 
 async function smartBluetoothReconnectSession(){
@@ -7387,45 +7554,11 @@ async function reconnectSavedBluetoothPrinter(showMessage=false){
   const pref=getBluetoothPrinterPreference();
   if(!pref) return false;
 
-  // Prioritas 1: objek perangkat masih tersedia dalam sesi yang sama.
-  if(bluetoothPrinterDevice?.gatt){
-    const ok=await smartBluetoothReconnectSession();
-    if(ok && showMessage) showToast('Printer Terhubung',`${bluetoothPrinterDevice.name || pref.name} siap digunakan.`,'success');
-    return ok;
+  const ok=await smartBluetoothAutoConnectNow();
+  if(ok && showMessage){
+    showToast('Printer Terhubung',`${bluetoothPrinterDevice?.name || pref.name || 'Printer'} berhasil dihubungkan otomatis.`,'success');
   }
-
-  // Prioritas 2: browser mendukung daftar perangkat yang pernah diberi izin.
-  if(smartBluetoothCanPersistentReconnect()){
-    if(bluetoothPrinterReconnectInProgress) return false;
-    bluetoothPrinterReconnectInProgress=true;
-    try{
-      smartBluetoothRefreshUi(`Mencari printer tersimpan: ${pref.name || 'Bluetooth Printer'}...`);
-      const devices=await navigator.bluetooth.getDevices();
-      const device=devices.find(d=>pref.id && d.id===pref.id) || devices.find(d=>pref.name && d.name===pref.name);
-      if(!device){
-        smartBluetoothRefreshUi(`Printer tersimpan: ${pref.name || 'Bluetooth Printer'} belum tersedia.`);
-        return false;
-      }
-      bluetoothPrinterDevice=device;
-      const ok=await connectBluetoothDevice(device,{silent:true});
-      if(ok){
-        saveBluetoothPrinterPreference();
-        smartBluetoothRefreshUi(`🟢 Terhubung otomatis: ${device.name || pref.name}`);
-        if(showMessage) showToast('Printer Terhubung',`${device.name || pref.name} berhasil dihubungkan otomatis.`,'success');
-      }
-      return ok;
-    }catch(err){
-      console.warn('Smart Bluetooth persistent reconnect gagal:',err);
-      smartBluetoothRefreshUi('Reconnect otomatis gagal. Coba Hubungkan Cepat.');
-      return false;
-    }finally{
-      bluetoothPrinterReconnectInProgress=false;
-    }
-  }
-
-  // Browser tidak bisa mengambil kembali BluetoothDevice setelah refresh.
-  smartBluetoothRefreshUi(`Printer tersimpan: ${pref.name || 'Bluetooth Printer'} — klik Hubungkan Cepat untuk melanjutkan.`);
-  return false;
+  return ok;
 }
 
 function startSavedBluetoothPrinterAutoReconnect({resetAttempts=true, immediate=true} = {}){
@@ -7438,8 +7571,9 @@ function startSavedBluetoothPrinterAutoReconnect({resetAttempts=true, immediate=
     bluetoothPrinterAutoReconnectTimer=null;
   }
 
-  // Jika halaman baru direfresh dan browser tidak mendukung getDevices(),
-  // jangan melakukan loop palsu. Tampilkan aksi satu klik yang benar.
+  // Setelah F5, reconnect otomatis hanya mungkin bila browser menyediakan
+  // getDevices() atau aplikasi berjalan melalui Native Printer Bridge.
+  // Jangan membuka requestDevice() otomatis karena browser akan memblokirnya.
   if(!bluetoothPrinterDevice && !smartBluetoothCanPersistentReconnect()){
     smartBluetoothRefreshUi(smartBluetoothDescribeSavedState());
     return;
@@ -7474,20 +7608,17 @@ function bindBluetoothDisconnectHandler(device){
 
 async function quickReconnectBluetoothPrinter(){
   const pref=getBluetoothPrinterPreference();
-  if(!pref){
-    return connectBluetoothPrinter();
+  if(!pref) return connectBluetoothPrinter();
+
+  // Selalu coba reconnect tanpa dialog terlebih dahulu.
+  const ok=await smartBluetoothAutoConnectNow();
+  if(ok){
+    showToast('Printer Terhubung',`${bluetoothPrinterDevice?.name || pref.name} siap digunakan.`,'success');
+    return true;
   }
 
-  // Jika masih dalam sesi yang sama, reconnect tanpa dialog.
-  if(bluetoothPrinterDevice?.gatt){
-    const ok=await smartBluetoothReconnectSession();
-    if(ok){
-      showToast('Printer Terhubung',`${bluetoothPrinterDevice.name || pref.name} siap digunakan.`,'success');
-      return true;
-    }
-  }
-
-  // Setelah refresh pada browser tanpa getDevices(), satu klik pengguna diperlukan.
+  // Fallback terakhir: dialog browser. Ini hanya untuk browser yang tidak
+  // mendukung getDevices() atau ketika izin perangkat belum tersedia.
   return connectBluetoothPrinter({quick:true});
 }
 
@@ -7600,12 +7731,17 @@ document.addEventListener('DOMContentLoaded', function () {
 // =====================================================
 // AUTO REFRESH SETELAH PEMBAYARAN / REFUND
 // =====================================================
+let appRefreshTimer = null;
+
 function autoRefreshApplication(delay = 1200, targetPage = null) {
   if (targetPage) {
     sessionStorage.setItem('appRefreshTargetPage', targetPage);
   }
 
-  setTimeout(() => {
+  // Hindari beberapa tombol/proses sukses membuat refresh ganda.
+  if (appRefreshTimer) clearTimeout(appRefreshTimer);
+
+  appRefreshTimer = setTimeout(() => {
     window.location.reload();
   }, delay);
 }
@@ -7968,5 +8104,210 @@ document.addEventListener('DOMContentLoaded', function () {
 })();
 </script>
 
+
+<!-- =====================================================
+     RPP02N BLUETOOTH CLASSIC / WEB SERIAL AUTOCONNECT
+     ===================================================== -->
+<script>
+(function(){
+  'use strict';
+
+  const CLASSIC_PREF_KEY='receiptClassicSerialPrinterV1';
+  let classicPrinterPort=null;
+  let classicReconnectTimer=null;
+  let classicReconnectInProgress=false;
+  let classicAutoAttempts=0;
+  const CLASSIC_BAUD_RATE=9600;
+
+  function classicSupported(){ return !!navigator.serial; }
+  function getClassicPref(){
+    try{return JSON.parse(localStorage.getItem(CLASSIC_PREF_KEY)||'null');}
+    catch(e){return null;}
+  }
+  function saveClassicPref(data){
+    const pref={
+      transport:'bluetooth-classic-serial',
+      name:data?.name||'RPP02N',
+      baudRate:Number(data?.baudRate||CLASSIC_BAUD_RATE),
+      autoConnect:true,
+      savedAt:Date.now(),
+      ...data
+    };
+    localStorage.setItem(CLASSIC_PREF_KEY,JSON.stringify(pref));
+    // Hentikan AutoConnect BLE lama agar tidak terus menghasilkan NetworkError.
+    localStorage.removeItem('receiptBluetoothPrinterV1');
+    return pref;
+  }
+  function classicStatus(message){
+    const status=document.getElementById('bluetoothPrinterStatus');
+    const saved=document.getElementById('bluetoothPrinterSavedName');
+    const pref=getClassicPref();
+    if(saved){
+      saved.textContent=pref ? `Printer Classic tersimpan: ${pref.name||'RPP02N'}` : 'Belum ada printer yang tersimpan.';
+    }
+    if(status && message) status.textContent=message;
+  }
+  function classicConnected(){ return !!classicPrinterPort?.writable; }
+
+  async function openClassicPort(port,pref={}){
+    if(!port) throw new Error('COM Port printer tidak ditemukan.');
+    if(!port.readable && !port.writable){
+      await port.open({baudRate:Number(pref.baudRate||CLASSIC_BAUD_RATE),dataBits:8,stopBits:1,parity:'none',flowControl:'none'});
+    }
+    classicPrinterPort=port;
+    try{
+      port.addEventListener('disconnect',()=>{
+        classicStatus('🟠 Printer Classic terputus. Menunggu dan mencoba reconnect otomatis...');
+        scheduleClassicReconnect(2000);
+      },{once:true});
+    }catch(e){}
+    return true;
+  }
+
+  async function connectClassicBluetoothPrinter(){
+    if(!classicSupported()){
+      showToast('Tidak Didukung','Browser ini tidak menyediakan Web Serial. Gunakan Chrome/Edge versi terbaru di Windows dan pastikan printer Classic membuat COM Port.','red');
+      return false;
+    }
+    try{
+      classicStatus('Pilih COM Port Bluetooth Classic RPP02N...');
+      // requestPort wajib berasal dari klik pengguna. Setelah dipilih sekali,
+      // getPorts() dapat dipakai untuk AutoConnect pada refresh berikutnya.
+      const port=await navigator.serial.requestPort();
+      await openClassicPort(port,{baudRate:CLASSIC_BAUD_RATE});
+      saveClassicPref({name:'RPP02N',baudRate:CLASSIC_BAUD_RATE});
+      classicAutoAttempts=0;
+      classicStatus('🟢 Terhubung: RPP02N (Bluetooth Classic / Serial)');
+      showToast('Printer Terhubung','RPP02N berhasil disimpan. Setelah refresh aplikasi akan mencoba AutoConnect ke COM Port yang sudah diizinkan.','success');
+      return true;
+    }catch(err){
+      console.warn('Classic Bluetooth connect gagal:',err);
+      classicStatus('Printer Classic belum terhubung.');
+      if(err?.name==='NotFoundError') showToast('Bluetooth Classic','Pemilihan COM Port dibatalkan.','red');
+      else showToast('Bluetooth Classic',err?.message||'Gagal membuka COM Port printer.','red');
+      return false;
+    }
+  }
+
+  async function reconnectClassicPrinter(showMessage=false){
+    const pref=getClassicPref();
+    if(!pref?.autoConnect || !classicSupported()) return false;
+    if(classicConnected()) return true;
+    if(classicReconnectInProgress) return false;
+    classicReconnectInProgress=true;
+    try{
+      classicStatus(`Menghubungkan otomatis Bluetooth Classic: ${pref.name||'RPP02N'}...`);
+      const ports=await navigator.serial.getPorts();
+      if(!ports.length){
+        classicStatus(`🟡 ${pref.name||'RPP02N'} tersimpan, tetapi izin COM Port belum tersedia. Hubungkan sekali melalui tombol Bluetooth Classic.`);
+        return false;
+      }
+      // Browser tidak selalu memberikan nama COM Port. Port yang pernah dipilih
+      // biasanya muncul kembali sebagai port pertama/yang sama dalam daftar izin.
+      const port=ports[0];
+      await openClassicPort(port,pref);
+      classicAutoAttempts=0;
+      classicStatus(`🟢 Terhubung otomatis: ${pref.name||'RPP02N'} (Bluetooth Classic)`);
+      if(showMessage) showToast('Printer Terhubung',`${pref.name||'RPP02N'} berhasil dihubungkan otomatis.`,'success');
+      return true;
+    }catch(err){
+      const msg=err?.message||err?.name||'Printer belum tersedia';
+      console.warn('Classic AutoConnect gagal:',msg);
+      classicStatus(`🟡 ${pref.name||'RPP02N'} belum tersedia. AutoConnect akan mencoba lagi...`);
+      return false;
+    }finally{
+      classicReconnectInProgress=false;
+    }
+  }
+
+  function scheduleClassicReconnect(delay=2000){
+    const pref=getClassicPref();
+    if(!pref?.autoConnect || !classicSupported()) return;
+    if(classicReconnectTimer) clearTimeout(classicReconnectTimer);
+    classicReconnectTimer=setTimeout(async()=>{
+      if(classicConnected()) return;
+      classicAutoAttempts++;
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok && classicAutoAttempts<120){
+        scheduleClassicReconnect(Math.min(2000+classicAutoAttempts*500,10000));
+      }
+    },delay);
+  }
+
+  async function writeClassic(data){
+    if(!classicConnected()){
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok || !classicConnected()) throw new Error('Printer Bluetooth Classic belum terhubung.');
+    }
+    const writer=classicPrinterPort.writable.getWriter();
+    try{
+      await writer.write(data instanceof Uint8Array ? data : new TextEncoder().encode(String(data)));
+    }finally{ writer.releaseLock(); }
+    return true;
+  }
+
+  // Simpan implementasi sebelumnya, lalu buat mode Classic sebagai prioritas
+  // bila RPP02N Classic sudah dipilih dan disimpan.
+  const oldQuick=window.quickReconnectBluetoothPrinter;
+  const oldReconnect=window.reconnectSavedBluetoothPrinter;
+  const oldForget=window.forgetBluetoothPrinter;
+  const oldSend=window.sendReceiptBluetooth;
+
+  window.quickReconnectBluetoothPrinter=async function(){
+    if(getClassicPref()) return reconnectClassicPrinter(true);
+    return typeof oldQuick==='function' ? oldQuick() : false;
+  };
+
+  window.reconnectSavedBluetoothPrinter=async function(showMessage=false){
+    if(getClassicPref()) return reconnectClassicPrinter(showMessage);
+    return typeof oldReconnect==='function' ? oldReconnect(showMessage) : false;
+  };
+
+  window.forgetBluetoothPrinter=async function(){
+    if(classicReconnectTimer) clearTimeout(classicReconnectTimer);
+    classicReconnectTimer=null;
+    try{ if(classicPrinterPort?.readable || classicPrinterPort?.writable) await classicPrinterPort.close(); }catch(e){}
+    classicPrinterPort=null;
+    localStorage.removeItem(CLASSIC_PREF_KEY);
+    if(typeof oldForget==='function'){
+      try{ oldForget(); }catch(e){}
+    }
+    classicStatus('Printer dilupakan. Anda dapat menghubungkan printer kembali.');
+    showToast('Printer','Preferensi printer Bluetooth Classic telah dihapus.','success');
+  };
+
+  window.sendReceiptBluetooth=async function(receipt){
+    if(getClassicPref()){
+      const ok=await reconnectClassicPrinter(false);
+      if(!ok && !classicConnected()) return false;
+      const encoder=new TextEncoder();
+      const init=new Uint8Array([0x1b,0x40,0x1b,0x61,0x00]);
+      await writeClassic(init);
+      const bytes=encoder.encode(buildEscPosText(receipt));
+      // Classic Serial dapat menerima data lebih besar, tetapi tetap dikirim
+      // bertahap agar stabil pada driver COM Bluetooth.
+      for(let i=0;i<bytes.length;i+=512){ await writeClassic(bytes.slice(i,i+512)); }
+      await writeClassic(new Uint8Array([0x1b,0x64,0x03,0x1d,0x56,0x00]));
+      return true;
+    }
+    return typeof oldSend==='function' ? oldSend(receipt) : false;
+  };
+
+  window.connectClassicBluetoothPrinter=connectClassicBluetoothPrinter;
+
+  // Jalankan AutoConnect saat halaman selesai dimuat dan ketika aplikasi kembali aktif.
+  function bootClassicAutoConnect(){
+    if(getClassicPref()){
+      reconnectClassicPrinter(false).then(ok=>{ if(!ok) scheduleClassicReconnect(2500); });
+    }
+  }
+  window.addEventListener('load',()=>setTimeout(bootClassicAutoConnect,300));
+  window.addEventListener('focus',()=>{ if(getClassicPref() && !classicConnected()) reconnectClassicPrinter(false); });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible' && getClassicPref() && !classicConnected()) reconnectClassicPrinter(false);
+  });
+  classicStatus(getClassicPref() ? 'Memeriksa printer Bluetooth Classic tersimpan...' : null);
+})();
+</script>
 </body>
 </html>
