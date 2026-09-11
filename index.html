@@ -7729,9 +7729,33 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 // =====================================================
-// AUTO REFRESH SETELAH PEMBAYARAN / REFUND
+// AUTO REFRESH + PERBAIKAN SCROLL SETELAH PENYIMPANAN
 // =====================================================
 let appRefreshTimer = null;
+
+// Menghapus sisa scroll-lock Bootstrap/backdrop sebelum dan sesudah refresh.
+// Ini mencegah aplikasi terkunci dan tidak bisa di-scroll di Desktop, HP,
+// maupun Tablet setelah proses simpan melakukan reload halaman.
+function restoreApplicationScroll() {
+  try {
+    document.body.classList.remove('modal-open');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('overflow-x');
+    document.body.style.removeProperty('overflow-y');
+    document.body.style.removeProperty('padding-right');
+    document.documentElement.style.removeProperty('overflow');
+    document.documentElement.style.removeProperty('overflow-x');
+    document.documentElement.style.removeProperty('overflow-y');
+
+    document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
+
+    // Pastikan halaman utama kembali dapat melakukan scroll normal.
+    document.documentElement.style.overflowY = 'auto';
+    document.body.style.overflowY = 'auto';
+  } catch (error) {
+    console.warn('Scroll restore:', error);
+  }
+}
 
 function autoRefreshApplication(delay = 1200, targetPage = null) {
   if (targetPage) {
@@ -7742,9 +7766,16 @@ function autoRefreshApplication(delay = 1200, targetPage = null) {
   if (appRefreshTimer) clearTimeout(appRefreshTimer);
 
   appRefreshTimer = setTimeout(() => {
+    // Bersihkan status modal/scroll-lock terlebih dahulu sebelum reload.
+    restoreApplicationScroll();
     window.location.reload();
   }, delay);
 }
+
+// Jalankan juga ketika browser memulihkan halaman dari cache (HP/Tablet).
+document.addEventListener('DOMContentLoaded', restoreApplicationScroll);
+window.addEventListener('load', restoreApplicationScroll);
+window.addEventListener('pageshow', restoreApplicationScroll);
 
 // Setelah halaman dimuat ulang, kembali ke menu yang sebelumnya ditentukan.
 document.addEventListener('DOMContentLoaded', function () {
