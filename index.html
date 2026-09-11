@@ -2355,6 +2355,28 @@
   }
 }
 
+
+
+/* ==================================================
+   FIX FINAL - SCROLL APLIKASI SETELAH AUTO REFRESH
+   Memastikan halaman utama tidak terkunci oleh modal/backdrop.
+   ================================================== */
+html, body{
+  height:auto !important;
+  min-height:100% !important;
+  overflow-x:hidden !important;
+  overflow-y:auto !important;
+  overscroll-behavior-y:auto !important;
+  -webkit-overflow-scrolling:touch;
+}
+body.modal-open{
+  overflow-y:auto !important;
+  padding-right:0 !important;
+}
+.app-shell, .main, .page-content{
+  min-height:100vh;
+}
+
 </style>
 </head>
 <body>
@@ -7738,20 +7760,27 @@ let appRefreshTimer = null;
 // maupun Tablet setelah proses simpan melakukan reload halaman.
 function restoreApplicationScroll() {
   try {
+    // Tutup semua modal yang mungkin masih menyisakan scroll-lock.
+    document.querySelectorAll('.modal.show').forEach(modal => {
+      modal.classList.remove('show');
+      modal.style.display = 'none';
+      modal.setAttribute('aria-hidden', 'true');
+    });
+
     document.body.classList.remove('modal-open');
-    document.body.style.removeProperty('overflow');
-    document.body.style.removeProperty('overflow-x');
-    document.body.style.removeProperty('overflow-y');
-    document.body.style.removeProperty('padding-right');
-    document.documentElement.style.removeProperty('overflow');
-    document.documentElement.style.removeProperty('overflow-x');
-    document.documentElement.style.removeProperty('overflow-y');
+    document.body.style.setProperty('overflow', 'auto', 'important');
+    document.body.style.setProperty('overflow-y', 'auto', 'important');
+    document.body.style.setProperty('overflow-x', 'hidden', 'important');
+    document.body.style.setProperty('padding-right', '0px', 'important');
+
+    document.documentElement.style.setProperty('overflow', 'auto', 'important');
+    document.documentElement.style.setProperty('overflow-y', 'auto', 'important');
+    document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');
 
     document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
 
-    // Pastikan halaman utama kembali dapat melakukan scroll normal.
-    document.documentElement.style.overflowY = 'auto';
-    document.body.style.overflowY = 'auto';
+    // Bersihkan elemen backdrop tambahan jika ada proses Bootstrap yang belum selesai.
+    document.querySelectorAll('[data-bs-backdrop]').forEach(() => {});
   } catch (error) {
     console.warn('Scroll restore:', error);
   }
@@ -7773,9 +7802,18 @@ function autoRefreshApplication(delay = 1200, targetPage = null) {
 }
 
 // Jalankan juga ketika browser memulihkan halaman dari cache (HP/Tablet).
-document.addEventListener('DOMContentLoaded', restoreApplicationScroll);
-window.addEventListener('load', restoreApplicationScroll);
-window.addEventListener('pageshow', restoreApplicationScroll);
+// Jalankan beberapa kali karena pada HP/Tablet Bootstrap/browser kadang
+// menerapkan kembali scroll-lock sesaat setelah event load/pageshow.
+function forceScrollRecovery() {
+  restoreApplicationScroll();
+  setTimeout(restoreApplicationScroll, 50);
+  setTimeout(restoreApplicationScroll, 250);
+  setTimeout(restoreApplicationScroll, 700);
+}
+document.addEventListener('DOMContentLoaded', forceScrollRecovery);
+window.addEventListener('load', forceScrollRecovery);
+window.addEventListener('pageshow', forceScrollRecovery);
+window.addEventListener('focus', restoreApplicationScroll);
 
 // Setelah halaman dimuat ulang, kembali ke menu yang sebelumnya ditentukan.
 document.addEventListener('DOMContentLoaded', function () {
